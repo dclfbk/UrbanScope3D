@@ -34,7 +34,7 @@ Check available public datasets useful to build a 3D urban prototype on Bologna,
 
 ### 3. Terrain / DEM
 
-| Dataset | Portal | Why it matters | Format / access | CRS | Spatial coverage | Resolution / nominal scale | Data quality / notes |
+| Dataset | Portal | Info| Format / access | CRS | Spatial coverage | Resolution / nominal scale | Data quality / notes |
 |---|---|---|---|---|---|---|---|
 | [DTM 0,5x0,5m - Comune di Bologna 2023](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/altimetria/layer-1740409827.23) | Geoportale Emilia-Romagna | **Terrain source for Bologna**. High-resolution DTM from 2023 airborne LiDAR. | GRID, WMS, WCS | Horizontal: RDN32 (UTM 32N), Vertical (elevation): ITALGEO2005 | Bologna municipal area | **0.5 m cells**; **scale equivalent 1:1,000**; tile size **500x500 m** | Detailed DTM for Bologna, use this one. |
 | [DTM 0,5x0,5m - RER 2023-24](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/altimetria/layer-60) | Geoportale Emilia-Romagna | Regiornal terrain model | GRID, WMS, WCS | Horizontal: RDN32 (UTM 32N), Vertical: ITALGEO2005 | Regional (where available) | **0.5 m cells**; **scale equivalent 1:1,000**; tile size **1000x1000 m** | Regiornal data, for areas outside Bologna (if needed) |
@@ -43,7 +43,7 @@ Check available public datasets useful to build a 3D urban prototype on Bologna,
 
 ### 4. Land use / ground surface
 
-| Dataset | Portal | Why it matters | Format / access | CRS | Spatial coverage | Resolution / nominal scale | Data quality / notes |
+| Dataset | Portal | Info | Format / access | CRS | Spatial coverage | Resolution / nominal scale | Data quality / notes |
 |---|---|---|---|---|---|---|---|
 | [Uso del suolo 2020 - coperture vettoriali di dettaglio - edizione 2023](https://geoportale.regione.emilia-romagna.it/download/dati-e-prodotti-cartografici-preconfezionati/pianificazione-e-catasto/uso-del-suolo/2020-coperture-vettoriali-uso-del-suolo-di-dettaglio-edizione-2023/dati-preconfezionati) | Geoportale Emilia-Romagna | **Land-use dataset**. Thematic classification for ground surfaces / land cover. | ESRI Shapefile | **ETRS89/UTM 32N (EPSG:25832)**, **Gauss Boaga Ovest (EPSG:3003)**, **UTMRER (EPSG:202003)**, **RDN32 (EPSG:7791)** | Regional | Reference scale **1:10,000**; minimum area **0.16 ha** and minimum linear width **7 m** (from the thematic documentation) | Zonal analysis |
 
@@ -51,7 +51,7 @@ Check available public datasets useful to build a 3D urban prototype on Bologna,
 
 ### 5. Environmental data (not for initial 3d -> maybe later for analysis or data integration)
 
-| Dataset | Portal | Why it matters | Format / access | CRS | Spatial coverage | Resolution / nominal scale | Data quality / notes |
+| Dataset | Portal | Info | Format / access | CRS | Spatial coverage | Resolution / nominal scale | Data quality / notes |
 |---|---|---|---|---|---|---|---|
 | [Temperature Bologna](https://bologna.opendatasoft.com/explore/dataset/temperature_bologna/) | Open Data Bologna | Daily temperature | Opendatasoft export/API | - | Municipality of Bologna | **Daily** | For temporal analysis, not a spatial temperature raster. |
 | [Centraline qualità dell'aria (misurazioni giornaliere)](https://bologna.opendatasoft.com/explore/dataset/centraline-qualita-aria/?flg=it-it) | Open Data Bologna | Daily environmental station data for 3 Bologna stations: Giardini Margherita, Via Chiarini, Porta San Felice. | Opendatasoft export/API | Point/station based | 3 stations inside Bologna municipality | **Daily** | Useful for point-based environmental indicators; not a continuous surface. |
