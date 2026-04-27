@@ -2,6 +2,8 @@
 
 # UrbanScope3D
 
+[https://urban-scope-3d.vercel.app/](https://urban-scope-3d.vercel.app/)
+
 UrbanScope3D is a web-based prototype for exploring urban environments in 3D through the integration of geospatial and environmental data.\
 The project focuses on interactive visualization of urban spaces, combining 3D city models with environmental datasets such as temperature and other contextual information.\
 It enables users to analyze and understand urban dynamics through spatial and visual exploration.
