@@ -9,14 +9,6 @@ type Props = {
   lon: number
 }
 
-const PRESETS: { label: string; date: () => Date }[] = [
-  { label: 'Solst. inv.', date: () => new Date(2026, 11, 21, 12, 0, 0) },
-  { label: 'Equin. pri.', date: () => new Date(2026, 2, 20, 12, 0, 0) },
-  { label: 'Solst. est.', date: () => new Date(2026, 5, 21, 12, 0, 0) },
-  { label: 'Equin. aut.', date: () => new Date(2026, 8, 22, 12, 0, 0) },
-  { label: 'Adesso', date: () => new Date() },
-]
-
 function isoDate(d: Date): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -73,7 +65,9 @@ export default function TimeSlider({ value, onChange, lat, lon }: Props) {
         step={15}
         value={totalMin}
         onChange={(e) => setMinutes(Number(e.target.value))}
-        className="w-full accent-cyan-400 cursor-pointer"
+        className={`sun-moon-slider w-full cursor-pointer ${
+          sun.isDay ? 'is-day' : 'is-night'
+        }`}
       />
 
       <div className="flex justify-between mt-1 text-[10px] font-mono text-gray-400">
@@ -82,18 +76,6 @@ export default function TimeSlider({ value, onChange, lat, lon }: Props) {
         <span className={sun.isDay ? 'text-amber-400' : 'text-blue-400'}>
           {sun.isDay ? 'giorno' : 'notte'}
         </span>
-      </div>
-
-      <div className="flex gap-2 mt-2 text-xs flex-wrap">
-        {PRESETS.map((p) => (
-          <button
-            key={p.label}
-            onClick={() => onChange(p.date())}
-            className="px-2 py-1 border border-cyan-400/30 text-cyan-300 hover:bg-cyan-400/10 rounded font-mono"
-          >
-            {p.label}
-          </button>
-        ))}
       </div>
     </div>
   )
