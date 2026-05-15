@@ -28,24 +28,37 @@ gdalwarp -overwrite -t_srs EPSG:4326 -r bilinear \
   -dstnodata 0 \
   "${IN}" "${WIND_4326}"
 
-# Range valori effettivo (servono per scegliere la scala)
+# Range valori effettivo (servono per calibrare la scala dinamicamente)
 MINMAX=$(gdalinfo -mm "${WIND_4326}" | awk -F'=' '/Computed Min\/Max/ { print $2; exit }')
-echo "[WIND] valori min/max effettivi: ${MINMAX} m/s"
+VMIN=$(echo "${MINMAX}" | cut -d, -f1)
+VMAX=$(echo "${MINMAX}" | cut -d, -f2)
+echo "[WIND] valori min/max effettivi: min=${VMIN}, max=${VMAX} m/s"
 
-# 2) Colormap viridis-like su 0-6 m/s (tipica per velocità vento urbano).
-#    Se il tuo dataset ha range diverso, edita questa scala.
+# 2) Colormap viridis stirata sul range effettivo del raster.
+#    Se il vento va da 0 a 3 m/s a Bologna, scaliamo i 7 stop su quel range
+#    invece di sprecarne 4 sulla fascia 3-6 mai usata. Risultato: si vedono
+#    bene i contrasti tra zone calme e zone piu' ventilate.
 CMAP="${TMP_DIR}/wind_cmap.txt"
-cat > "${CMAP}" <<'EOF'
-0.0    68   1  84    0
-0.5    72  35 116  140
-1.5    64  67 135  190
-2.5    52  94 141  210
-3.5    41 121 142  220
-4.5    34 168 132  230
-5.5   122 209  81  240
-6.5   253 231  37  245
-nv      0   0   0    0
-EOF
+python - <<PY > "${CMAP}"
+vmin, vmax = ${VMIN}, ${VMAX}
+stops = [
+    (68,   1,  84),
+    (72,  35, 116),
+    (64,  67, 135),
+    (52,  94, 141),
+    (41, 121, 142),
+    (34, 168, 132),
+    (122, 209, 81),
+    (253, 231,  37),
+]
+n = len(stops) - 1
+for i, (r, g, b) in enumerate(stops):
+    v = vmin + (vmax - vmin) * (i / n)
+    alpha = 0 if i == 0 else min(245, 140 + i * 18)
+    print(f"{v:.3f}  {r} {g} {b}  {alpha}")
+print("nv  0 0 0  0")
+PY
+cat "${CMAP}"
 
 # 3) Applica colormap -> RGBA GeoTIFF -> PNG
 WIND_RGBA="${TMP_DIR}/wind_rgba.tif"
@@ -60,6 +73,19 @@ read XMIN YMAX XMAX YMIN < <(gdalinfo "${WIND_4326}" \
          /Lower Right/ { gsub(/[(),]/,""); xmax=$3; ymin=$4 }
          END { print xmin, ymax, xmax, ymin }')
 echo "[WIND] bounds: W=${XMIN}  S=${YMIN}  E=${XMAX}  N=${YMAX}"
+
+# Legenda generata dinamicamente sulla stessa scala usata per il PNG.
+LEGEND=$(python - <<PY
+vmin, vmax = ${VMIN}, ${VMAX}
+stops = ["#482371","#404387","#345e8d","#29798e","#22a884","#7ad151","#fde725"]
+n = len(stops) - 1
+items = []
+for i, c in enumerate(stops):
+    v = vmin + (vmax - vmin) * ((i + 1) / (n + 1))
+    items.append(f'{{"value": {v:.2f}, "color": "{c}"}}')
+print(",\n    ".join(items))
+PY
+)
 
 cat > "${OUT_META}" <<EOF
 {
@@ -80,13 +106,7 @@ cat > "${OUT_META}" <<EOF
     [${XMIN}, ${YMIN}]
   ],
   "legend": [
-    {"value": 0.5, "color": "#482371"},
-    {"value": 1.5, "color": "#404387"},
-    {"value": 2.5, "color": "#345e8d"},
-    {"value": 3.5, "color": "#29798e"},
-    {"value": 4.5, "color": "#22a884"},
-    {"value": 5.5, "color": "#7ad151"},
-    {"value": 6.5, "color": "#fde725"}
+    ${LEGEND}
   ]
 }
 EOF
