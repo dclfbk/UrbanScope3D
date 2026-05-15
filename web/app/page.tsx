@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { withBase } from '@/lib/basePath';
 
 export default function Home() {
   return (
@@ -10,7 +11,7 @@ export default function Home() {
         playsInline
         className="absolute inset-0 w-full h-full object-cover"
       >
-        <source src="/BolognaLowQuality.mp4" type="video/mp4" />
+        <source src={withBase('/BolognaLowQuality.mp4')} type="video/mp4" />
       </video>
 
       <div className="absolute inset-0 bg-black/60" />

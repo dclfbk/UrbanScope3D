@@ -3,24 +3,251 @@
 import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import { MapboxOverlay } from '@deck.gl/mapbox'
+import {
+  _SunLight as SunLight,
+  AmbientLight,
+  LightingEffect,
+  type Layer,
+} from '@deck.gl/core'
+import { GeoJsonLayer, ColumnLayer } from '@deck.gl/layers'
+import { getSunPosition, toMapLibreLight } from '@/lib/sun'
+import {
+  loadTemperatureSeries,
+  lookupTemperature,
+  type TempLookup,
+  type TempRecord,
+} from '@/lib/temperature'
+import TimeSlider from '@/components/UI/TimeSlider'
+import InfoPanel from '@/components/UI/InfoPanel'
+import { withBase } from '@/lib/basePath'
+
+type LayerKey =
+  | 'land-use'
+  | 'buildings-particellari'
+  | 'buildings-3d'
+  | 'trees'
+  | 'green-areas'
+  | 'wind'
+
+const LAYERS: { id: LayerKey; label: string; default: boolean }[] = [
+  { id: 'land-use', label: 'Uso del suolo 2020', default: false },
+  { id: 'buildings-particellari', label: 'Edifici (footprint 2D)', default: false },
+  { id: 'buildings-3d', label: 'Edifici 3D + ombre', default: true },
+  { id: 'trees', label: 'Alberi (DBTR)', default: true },
+  { id: 'green-areas', label: 'Aree verdi', default: true },
+  { id: 'wind', label: 'Velocità vento (m/s)', default: false },
+]
+
+const BUILDINGS_FOOTPRINT_URL = withBase('/data/1)Buildings/1.1_Edifici_Particellari.geojson')
+const BUILDINGS_HEIGHTS_URL = withBase('/data/processed/buildings_heights.geojson')
+const WIND_META_URL = withBase('/data/processed/wind_overlay.json')
+const TREES_URL = withBase('/data/2)Vegetation/2.1_trees_aoi.geojson')
+const LANDUSE_URL = withBase('/data/4)LandUse-GroundSurface/4.1_uso_suolo_2020_ed2023_aoi.geojson')
+const GREEN_URL = withBase('/data/green.geojson')
+
+type WindOverlay = {
+  png: string
+  coordinates: [
+    [number, number],
+    [number, number],
+    [number, number],
+    [number, number],
+  ]
+}
+
+const AOI_CENTER: [number, number] = [11.343720439501553, 44.49989258707834]
+const DEFAULT_BUILDING_HEIGHT = 15
+const TREE_HEIGHT = 10
+const TREE_RADIUS = 3
+
+type TreePoint = { position: [number, number] }
+
+function buildLightingEffect(timestamp: number): LightingEffect {
+  const sun = new SunLight({
+    timestamp,
+    color: [255, 255, 255],
+    intensity: 1.5,
+    _shadow: true,
+  })
+  const ambient = new AmbientLight({
+    color: [255, 255, 255],
+    intensity: 1.0,
+  })
+  const effect = new LightingEffect({ sun, ambient })
+  ;(effect as unknown as { shadowColor: number[] }).shadowColor = [
+    0, 0, 0, 0.45,
+  ]
+  return effect
+}
+
+type BuildingFeature = {
+  properties?: { height?: number } | null
+}
+
+function buildShadowBuildingsLayer(
+  visible: boolean,
+  dataUrl: string,
+): GeoJsonLayer | null {
+  if (!visible) return null
+  return new GeoJsonLayer({
+    id: 'buildings-shadow',
+    data: dataUrl,
+    stroked: true,
+    filled: true,
+    extruded: true,
+    getElevation: (f: BuildingFeature) => {
+      const h = f.properties?.height
+      return typeof h === 'number' && h > 0 ? h : DEFAULT_BUILDING_HEIGHT
+    },
+    getFillColor: [180, 200, 230, 240],
+    getLineColor: [80, 100, 130, 255],
+    lineWidthMinPixels: 0.5,
+    pickable: false,
+    material: {
+      ambient: 0.4,
+      diffuse: 0.9,
+      shininess: 20,
+      specularColor: [60, 64, 70],
+    },
+  })
+}
+
+function buildTreesLayer(
+  visible: boolean,
+  data: TreePoint[] | null,
+): ColumnLayer<TreePoint> | null {
+  if (!visible || !data || data.length === 0) return null
+  return new ColumnLayer<TreePoint>({
+    id: 'trees-3d',
+    data,
+    diskResolution: 8,
+    radius: TREE_RADIUS,
+    extruded: true,
+    pickable: false,
+    getPosition: (d) => d.position,
+    getElevation: TREE_HEIGHT,
+    getFillColor: [60, 130, 70, 235],
+    getLineColor: [30, 70, 35, 255],
+    material: {
+      ambient: 0.4,
+      diffuse: 0.85,
+      shininess: 5,
+      specularColor: [40, 60, 40],
+    },
+  })
+}
 
 export default function MapViewer() {
   const containerRef = useRef<HTMLDivElement>(null)
-  const mapRef = useRef<any>(null)
+  const mapRef = useRef<maplibregl.Map | null>(null)
+  const overlayRef = useRef<MapboxOverlay | null>(null)
   const [loading, setLoading] = useState(true)
+  const [currentTime, setCurrentTime] = useState<Date>(
+    () => new Date(2026, 5, 21, 12, 0, 0),
+  )
+  const [visibility, setVisibility] = useState<Record<LayerKey, boolean>>(
+    () =>
+      Object.fromEntries(LAYERS.map((l) => [l.id, l.default])) as Record<
+        LayerKey,
+        boolean
+      >,
+  )
+  const [trees, setTrees] = useState<TreePoint[] | null>(null)
+  const [tempRecords, setTempRecords] = useState<TempRecord[] | null>(null)
+  const [probe, setProbe] = useState<{ lat: number; lon: number } | null>(null)
+  const [tempLookup, setTempLookup] = useState<TempLookup | null>(null)
+  const [buildingsUrl, setBuildingsUrl] = useState<string>(
+    BUILDINGS_FOOTPRINT_URL,
+  )
+  const [windOverlay, setWindOverlay] = useState<WindOverlay | null>(null)
+  const windAddedRef = useRef(false)
 
+  // Carica gli alberi una volta sola.
+  useEffect(() => {
+    let cancelled = false
+    fetch(TREES_URL)
+      .then((r) => r.json())
+      .then((fc: { features: { geometry: { coordinates: [number, number] } }[] }) => {
+        if (cancelled) return
+        setTrees(
+          fc.features.map((f) => ({
+            position: f.geometry.coordinates,
+          })),
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setTrees([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Carica la serie temperatura una volta sola.
+  useEffect(() => {
+    let cancelled = false
+    loadTemperatureSeries().then((records) => {
+      if (!cancelled) setTempRecords(records)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Probe asset processati (altezze edifici da DSM, overlay vento). Se i file
+  // non esistono ancora -- l'utente non ha lanciato gli script di build --
+  // i layer ricadono sul footprint base / niente overlay.
+  useEffect(() => {
+    let cancelled = false
+    fetch(BUILDINGS_HEIGHTS_URL, { method: 'HEAD' })
+      .then((r) => {
+        if (!cancelled && r.ok) setBuildingsUrl(BUILDINGS_HEIGHTS_URL)
+      })
+      .catch(() => {})
+    fetch(WIND_META_URL)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((meta) => {
+        if (cancelled || !meta) return
+        if (
+          meta.image &&
+          Array.isArray(meta.coordinates) &&
+          meta.coordinates.length === 4
+        ) {
+          setWindOverlay({
+            png: withBase(meta.image),
+            coordinates: meta.coordinates,
+          })
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Aggiorna la lookup temperatura quando cambia il punto cliccato o la data.
+  useEffect(() => {
+    if (!probe || !tempRecords) {
+      setTempLookup(null)
+      return
+    }
+    setTempLookup(lookupTemperature(tempRecords, currentTime))
+  }, [probe, tempRecords, currentTime])
+
+  // Costruzione mappa.
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
 
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-      center: [11.343720439501553, 44.49989258707834],
+      center: AOI_CENTER,
       zoom: 14,
       minZoom: 12,
       maxZoom: 19,
-      pitch: 45,
-      bearing: 0,
+      pitch: 60,
+      bearing: -20,
       maxBounds: [
         [11.25, 44.45],
         [11.45, 44.55],
@@ -28,32 +255,64 @@ export default function MapViewer() {
     })
 
     map.on('load', () => {
-      // 🏠 Edifici 3D da OSM (già con altezze reali)
+      const initialVis = (id: LayerKey) =>
+        LAYERS.find((l) => l.id === id)!.default ? 'visible' : 'none'
+
+      map.addSource('landuse', {
+        type: 'geojson',
+        data: LANDUSE_URL,
+      })
+      map.addLayer({
+        id: 'land-use',
+        source: 'landuse',
+        type: 'fill',
+        paint: {
+          'fill-color': 'rgba(180, 130, 80, 0.25)',
+          'fill-outline-color': 'rgba(220, 170, 110, 0.6)',
+        },
+        layout: { visibility: initialVis('land-use') },
+      })
+
+      map.addSource('buildings-particellari', {
+        type: 'geojson',
+        data: BUILDINGS_FOOTPRINT_URL,
+      })
+      map.addLayer({
+        id: 'buildings-particellari',
+        source: 'buildings-particellari',
+        type: 'fill',
+        paint: {
+          'fill-color': 'rgba(120, 160, 200, 0.35)',
+          'fill-outline-color': 'rgba(150, 200, 240, 0.9)',
+        },
+        layout: { visibility: initialVis('buildings-particellari') },
+      })
+
       map.addSource('openmaptiles', {
         type: 'vector',
         url: 'https://tiles.openfreemap.org/planet',
       })
-
       map.addLayer({
-        id: 'buildings-3d',
+        id: 'osm-buildings-context',
         source: 'openmaptiles',
         'source-layer': 'building',
         type: 'fill-extrusion',
         minzoom: 13,
         paint: {
-          'fill-extrusion-color': 'rgb(70, 90, 110)',
+          'fill-extrusion-color': 'rgb(60, 75, 95)',
           'fill-extrusion-height': ['get', 'render_height'],
           'fill-extrusion-base': ['get', 'render_min_height'],
-          'fill-extrusion-opacity': 0.9,
+          'fill-extrusion-opacity': 0.85,
+        },
+        layout: {
+          visibility: visibility['buildings-3d'] ? 'visible' : 'none',
         },
       })
 
-      // 🌳 Aree verdi
       map.addSource('green', {
         type: 'geojson',
-        data: '/data/green.geojson',
+        data: GREEN_URL,
       })
-
       map.addLayer({
         id: 'green-areas',
         source: 'green',
@@ -62,24 +321,31 @@ export default function MapViewer() {
           'fill-color': 'rgba(34, 197, 94, 0.4)',
           'fill-outline-color': 'rgba(34, 197, 94, 0.8)',
         },
+        layout: { visibility: initialVis('green-areas') },
       })
 
-      // 🌡️ Stazioni temperatura
-      map.addSource('temperature', {
-        type: 'geojson',
-        data: '/data/temperature.geojson',
+      const overlay = new MapboxOverlay({
+        interleaved: false,
+        effects: [buildLightingEffect(currentTime.getTime())],
+        layers: [
+          buildShadowBuildingsLayer(
+            LAYERS.find((l) => l.id === 'buildings-3d')!.default,
+            buildingsUrl,
+          ),
+          buildTreesLayer(
+            LAYERS.find((l) => l.id === 'trees')!.default,
+            trees,
+          ),
+        ].filter(Boolean) as Layer[],
       })
+      map.addControl(overlay as unknown as maplibregl.IControl)
+      overlayRef.current = overlay
 
-      map.addLayer({
-        id: 'temp-points',
-        source: 'temperature',
-        type: 'circle',
-        paint: {
-          'circle-radius': 8,
-          'circle-color': 'rgb(251, 191, 36)',
-          'circle-stroke-color': 'white',
-          'circle-stroke-width': 2,
-        },
+      const sun0 = getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0])
+      map.setLight(toMapLibreLight(sun0))
+
+      map.on('click', (e) => {
+        setProbe({ lat: e.lngLat.lat, lon: e.lngLat.lng })
       })
 
       setLoading(false)
@@ -90,8 +356,88 @@ export default function MapViewer() {
     return () => {
       map.remove()
       mapRef.current = null
+      overlayRef.current = null
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Aggiorna sole + ombre quando cambia currentTime.
+  useEffect(() => {
+    const map = mapRef.current
+    const overlay = overlayRef.current
+    if (!map || !overlay) return
+    const sun = getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0])
+    if (map.isStyleLoaded()) {
+      map.setLight(toMapLibreLight(sun))
+    }
+    overlay.setProps({
+      effects: [buildLightingEffect(currentTime.getTime())],
+    })
+  }, [currentTime])
+
+  // Aggiunge il source/layer del vento quando arriva la meta (one-shot).
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !windOverlay || windAddedRef.current) return
+    const register = () => {
+      if (windAddedRef.current || map.getSource('wind')) return
+      map.addSource('wind', {
+        type: 'image',
+        url: windOverlay.png,
+        coordinates: windOverlay.coordinates,
+      })
+      map.addLayer({
+        id: 'wind',
+        source: 'wind',
+        type: 'raster',
+        paint: { 'raster-opacity': 0.65 },
+        layout: { visibility: visibility['wind'] ? 'visible' : 'none' },
+      })
+      windAddedRef.current = true
+    }
+    if (map.isStyleLoaded()) register()
+    else map.once('load', register)
+  }, [windOverlay, visibility])
+
+  // Toggle layer + propagazione dati alberi/altezze quando cambiano.
+  useEffect(() => {
+    const map = mapRef.current
+    const overlay = overlayRef.current
+    if (!map) return
+    const apply = () => {
+      const maplibre3d = visibility['buildings-3d'] ? 'visible' : 'none'
+      for (const id of [
+        'land-use',
+        'buildings-particellari',
+        'green-areas',
+        'wind',
+      ] as LayerKey[]) {
+        if (map.getLayer(id)) {
+          map.setLayoutProperty(
+            id,
+            'visibility',
+            visibility[id] ? 'visible' : 'none',
+          )
+        }
+      }
+      if (map.getLayer('osm-buildings-context')) {
+        map.setLayoutProperty('osm-buildings-context', 'visibility', maplibre3d)
+      }
+      if (overlay) {
+        overlay.setProps({
+          layers: [
+            buildShadowBuildingsLayer(
+              visibility['buildings-3d'],
+              buildingsUrl,
+            ),
+            buildTreesLayer(visibility['trees'], trees),
+          ].filter(Boolean) as Layer[],
+        })
+      }
+    }
+    if (map.isStyleLoaded()) apply()
+    else map.once('idle', apply)
+  }, [visibility, trees, buildingsUrl])
 
   return (
     <div className="relative w-full h-full">
@@ -104,6 +450,64 @@ export default function MapViewer() {
         </div>
       )}
       <div ref={containerRef} className="w-full h-full" />
+
+      <div className="absolute top-4 left-4 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-3 backdrop-blur-sm shadow-xl">
+        <div className="text-cyan-400 text-xs font-mono uppercase tracking-widest mb-2">
+          Layer
+        </div>
+        <div className="flex flex-col gap-1.5 min-w-[220px]">
+          {LAYERS.map((l) => {
+            const disabled = l.id === 'wind' && !windOverlay
+            return (
+              <label
+                key={l.id}
+                title={
+                  disabled
+                    ? 'Lancia scripts/build_wind_overlay.sh per generare l’overlay'
+                    : undefined
+                }
+                className={`flex items-center gap-2 text-sm transition-colors ${
+                  disabled
+                    ? 'text-gray-500 cursor-not-allowed'
+                    : 'text-gray-200 cursor-pointer hover:text-cyan-300'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  disabled={disabled}
+                  checked={visibility[l.id]}
+                  onChange={(e) =>
+                    setVisibility((v) => ({ ...v, [l.id]: e.target.checked }))
+                  }
+                  className="accent-cyan-400 cursor-pointer disabled:cursor-not-allowed"
+                />
+                <span>{l.label}</span>
+              </label>
+            )
+          })}
+        </div>
+        <div className="text-gray-500 text-[10px] font-mono mt-2 italic">
+          click sulla mappa &rarr; temperatura
+        </div>
+      </div>
+
+      <TimeSlider
+        value={currentTime}
+        onChange={setCurrentTime}
+        lat={AOI_CENTER[1]}
+        lon={AOI_CENTER[0]}
+      />
+
+      {probe && (
+        <InfoPanel
+          lat={probe.lat}
+          lon={probe.lon}
+          date={currentTime}
+          temp={tempLookup}
+          loading={!tempRecords}
+          onClose={() => setProbe(null)}
+        />
+      )}
     </div>
   )
 }
