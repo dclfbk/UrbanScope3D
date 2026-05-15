@@ -11,6 +11,8 @@ import {
   type Layer,
 } from '@deck.gl/core'
 import { GeoJsonLayer, ColumnLayer } from '@deck.gl/layers'
+import { SimpleMeshLayer } from '@deck.gl/mesh-layers'
+import { SphereGeometry } from '@luma.gl/engine'
 import { getSunPosition, toMapLibreLight } from '@/lib/sun'
 import {
   loadTemperatureSeries,
@@ -58,10 +60,25 @@ type WindOverlay = {
 
 const AOI_CENTER: [number, number] = [11.343720439501553, 44.49989258707834]
 const DEFAULT_BUILDING_HEIGHT = 15
-const TREE_HEIGHT = 10
-const TREE_RADIUS = 3
 
-type TreePoint = { position: [number, number] }
+// Albero stilizzato: tronco cilindrico + chioma sferica (no asset esterni).
+const TRUNK_HEIGHT = 3.2
+const TRUNK_RADIUS = 0.32
+const CANOPY_RADIUS = 2.6
+const CANOPY_GEOMETRY = new SphereGeometry({
+  radius: 1,
+  nlat: 14,
+  nlong: 14,
+})
+
+type TreePoint = { position: [number, number]; seed: number }
+
+// Hash deterministico per dare un po' di variazione (scala + tonalita') a
+// ogni albero senza fare flicker tra render.
+function hashSeed(lon: number, lat: number): number {
+  const x = Math.sin(lon * 12.9898 + lat * 78.233) * 43758.5453
+  return x - Math.floor(x)
+}
 
 function buildLightingEffect(timestamp: number): LightingEffect {
   const sun = new SunLight({
@@ -113,29 +130,59 @@ function buildShadowBuildingsLayer(
   })
 }
 
-function buildTreesLayer(
+function buildTreesLayers(
   visible: boolean,
   data: TreePoint[] | null,
-): ColumnLayer<TreePoint> | null {
-  if (!visible || !data || data.length === 0) return null
-  return new ColumnLayer<TreePoint>({
-    id: 'trees-3d',
+): Layer[] {
+  if (!visible || !data || data.length === 0) return []
+  const trunk = new ColumnLayer<TreePoint>({
+    id: 'trees-trunk',
     data,
-    diskResolution: 8,
-    radius: TREE_RADIUS,
+    diskResolution: 10,
+    radius: TRUNK_RADIUS,
     extruded: true,
     pickable: false,
     getPosition: (d) => d.position,
-    getElevation: TREE_HEIGHT,
-    getFillColor: [60, 130, 70, 235],
-    getLineColor: [30, 70, 35, 255],
+    getElevation: (d) => TRUNK_HEIGHT * (0.85 + d.seed * 0.4),
+    getFillColor: [82, 58, 38, 255],
     material: {
-      ambient: 0.4,
-      diffuse: 0.85,
-      shininess: 5,
-      specularColor: [40, 60, 40],
+      ambient: 0.45,
+      diffuse: 0.7,
+      shininess: 3,
+      specularColor: [40, 30, 20],
     },
   })
+  const canopy = new SimpleMeshLayer<TreePoint>({
+    id: 'trees-canopy',
+    data,
+    mesh: CANOPY_GEOMETRY,
+    pickable: false,
+    getPosition: (d) => d.position,
+    // Translation in metri sull'asse z (up): la chioma sta sopra al tronco.
+    getTranslation: (d) => [
+      0,
+      0,
+      TRUNK_HEIGHT * (0.85 + d.seed * 0.4) + CANOPY_RADIUS * 0.75,
+    ],
+    getScale: (d) => {
+      const s = CANOPY_RADIUS * (0.8 + d.seed * 0.55)
+      return [s, s, s * (0.85 + d.seed * 0.2)]
+    },
+    getColor: (d) => {
+      // Verdi un po' diversi per albero, tono caldo o freddo a seconda del seed.
+      const g = 110 + Math.round(d.seed * 50)
+      const r = 50 + Math.round(d.seed * 30)
+      const b = 55 + Math.round((1 - d.seed) * 35)
+      return [r, g, b, 245]
+    },
+    material: {
+      ambient: 0.35,
+      diffuse: 0.9,
+      shininess: 6,
+      specularColor: [50, 80, 50],
+    },
+  })
+  return [trunk, canopy]
 }
 
 export default function MapViewer() {
@@ -173,6 +220,7 @@ export default function MapViewer() {
         setTrees(
           fc.features.map((f) => ({
             position: f.geometry.coordinates,
+            seed: hashSeed(f.geometry.coordinates[0], f.geometry.coordinates[1]),
           })),
         )
       })
@@ -332,7 +380,7 @@ export default function MapViewer() {
             LAYERS.find((l) => l.id === 'buildings-3d')!.default,
             buildingsUrl,
           ),
-          buildTreesLayer(
+          ...buildTreesLayers(
             LAYERS.find((l) => l.id === 'trees')!.default,
             trees,
           ),
@@ -376,6 +424,8 @@ export default function MapViewer() {
   }, [currentTime])
 
   // Aggiunge il source/layer del vento quando arriva la meta (one-shot).
+  // Uso 'idle' (non 'load') perche' load si emette una volta sola: se questo
+  // effect monta dopo che la map ha gia' caricato, once('load') non parte mai.
   useEffect(() => {
     const map = mapRef.current
     if (!map || !windOverlay || windAddedRef.current) return
@@ -386,17 +436,25 @@ export default function MapViewer() {
         url: windOverlay.png,
         coordinates: windOverlay.coordinates,
       })
-      map.addLayer({
-        id: 'wind',
-        source: 'wind',
-        type: 'raster',
-        paint: { 'raster-opacity': 0.65 },
-        layout: { visibility: visibility['wind'] ? 'visible' : 'none' },
-      })
+      // Lo metto sotto agli edifici 3D OSM: il vento e' una mappa di sfondo,
+      // gli edifici 3D restano in primo piano.
+      const beforeId = map.getLayer('osm-buildings-context')
+        ? 'osm-buildings-context'
+        : undefined
+      map.addLayer(
+        {
+          id: 'wind',
+          source: 'wind',
+          type: 'raster',
+          paint: { 'raster-opacity': 0.7 },
+          layout: { visibility: visibility['wind'] ? 'visible' : 'none' },
+        },
+        beforeId,
+      )
       windAddedRef.current = true
     }
     if (map.isStyleLoaded()) register()
-    else map.once('load', register)
+    else map.once('idle', register)
   }, [windOverlay, visibility])
 
   // Toggle layer + propagazione dati alberi/altezze quando cambiano.
@@ -430,7 +488,7 @@ export default function MapViewer() {
               visibility['buildings-3d'],
               buildingsUrl,
             ),
-            buildTreesLayer(visibility['trees'], trees),
+            ...buildTreesLayers(visibility['trees'], trees),
           ].filter(Boolean) as Layer[],
         })
       }
