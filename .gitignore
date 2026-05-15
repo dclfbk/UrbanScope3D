@@ -1,0 +1,46 @@
+# Repo root .gitignore - vedi anche web/.gitignore per il sottoprogetto Next.js
+
+# Output intermedio della pipeline (vedi documentation/2_data-packaging-strategy.md)
+/data/
+
+# Output processati: i derivati leggeri (wind overlay, building heights, ...)
+# vanno committati cosi' che il deploy su GitHub Pages li possa servire.
+# Se un output futuro supera ~50 MB aggiungere qui un ignore mirato.
+
+# Raw DBTR troppo grossi per GitHub (limite 100 MB / file).
+# Si scaricano localmente con `python scripts/download_missing_data.py`.
+/web/public/data/1)Buildings/1.2_DBTR_Edificio.json
+/web/public/data/1)Buildings/1.3_DBTR_Unita_Volumetrica.json
+
+# Estrazioni procons DBTR (stessi dati formato diverso, > 100 MB)
+/web/public/data/2)Vegetation/2.4.2_estraz_procons.json
+
+# Land Use raw shapefile per CRS (non usate dal viewer, alcune > 100 MB).
+# Il viewer carica solo 4.1_uso_suolo_2020_ed2023_aoi.geojson (clippato all'AOI).
+/web/public/data/4)LandUse-GroundSurface/4.1_Uso_Suolo_Dettaglio_2020_ETRS89/
+/web/public/data/4)LandUse-GroundSurface/4.2_Uso_Suolo_Dettaglio_2020_GBO/
+/web/public/data/4)LandUse-GroundSurface/4.3_Uso_Suolo_Dettaglio_2020_UTMRER/
+/web/public/data/4)LandUse-GroundSurface/4.4_Uso_Suolo_Dettaglio_2020_RDN32/
+
+# DSM raw (~500 .ASC) condiviso da Leonardo - serve solo come sorgente per
+# scripts/build_dsm_ndsm.sh, l'output utile sta in processed/.
+/web/public/data/DatiLeonardo_8-05-2026/
+/web/public/data/wetransfer_dsm_bologna_2026-05-08_1237.zip
+
+# Claude Code locale
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
