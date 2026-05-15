@@ -1,4 +1,30 @@
-name: Deploy to GitHub Pages
+name: Build (Next static export)
+
+# Verifica solo che `next build` esca pulito a ogni push.
+# Il deploy su GitHub Pages e' temporaneamente disattivato: il repo
+# dclfbk/UrbanScope3D non ha ancora Pages abilitato (Settings -> Pages
+# -> Source: GitHub Actions) e il deploy fallirebbe. Intanto il deploy
+# pubblico avviene su Vercel via integration.
+#
+# Quando Pages sara' attivo, aggiungere sotto il job `build`:
+#
+#   - uses: actions/configure-pages@v5
+#   - uses: actions/upload-pages-artifact@v3
+#     with:
+#       path: web/out
+#
+#   deploy:
+#     needs: build
+#     runs-on: ubuntu-latest
+#     permissions:
+#       pages: write
+#       id-token: write
+#     environment:
+#       name: github-pages
+#       url: ${{ steps.deployment.outputs.page_url }}
+#     steps:
+#       - id: deployment
+#         uses: actions/deploy-pages@v4
 
 on:
   push:
@@ -7,11 +33,9 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: pages-build
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +45,8 @@ jobs:
       run:
         working-directory: ./web
     env:
-      # Repository name in `<user>.github.io/<repo>/`. Update if the repo is renamed.
+      # Il basePath qui e' impostato gia' come servira' su Pages, cosi'
+      # il build CI verifica anche la compatibilita' con il path finale.
       NEXT_PUBLIC_BASE_PATH: /UrbanScope3D
     steps:
       - uses: actions/checkout@v4
@@ -35,19 +60,3 @@ jobs:
       - run: npm ci
 
       - run: npm run build
-
-      - uses: actions/configure-pages@v5
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: web/out
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
