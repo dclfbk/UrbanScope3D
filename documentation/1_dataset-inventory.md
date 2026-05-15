@@ -38,6 +38,7 @@ Check available public datasets useful to build a 3D urban prototype on Bologna,
 |---|---|---|---|---|---|---|---|
 | [DTM 0,5x0,5m - Comune di Bologna 2023](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/altimetria/layer-1740409827.23) | Geoportale Emilia-Romagna | **Terrain source for Bologna**. High-resolution DTM from 2023 airborne LiDAR. | GRID, WMS, WCS | Horizontal: RDN32 (UTM 32N), Vertical (elevation): ITALGEO2005 | Bologna municipal area | **0.5 m cells**; **scale equivalent 1:1,000**; tile size **500x500 m** | Detailed DTM for Bologna, use this one. |
 | [DTM 0,5x0,5m - RER 2023-24](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/altimetria/layer-60) | Geoportale Emilia-Romagna | Regiornal terrain model | GRID, WMS, WCS | Horizontal: RDN32 (UTM 32N), Vertical: ITALGEO2005 | Regional (where available) | **0.5 m cells**; **scale equivalent 1:1,000**; tile size **1000x1000 m** | Regiornal data, for areas outside Bologna (if needed) |
+| DSM Bologna 2023 (shared by Leonardo, FBK) | Geoportale Emilia-Romagna (origin) | **Surface model** (includes buildings and tree canopies). Used to derive per-building heights by subtracting the DTM (nDSM = DSM - DTM, see [9_building-heights-pipeline.md](9_building-heights-pipeline.md)). | ESRI ASCII Grid (`.ASC`), ~500 tiles | Horizontal: assumed **EPSG:25832** (no `.prj` shipped; coordinates consistent with UTM 32N). Override via `DSM_SRS` env in the build script. | Bologna municipal area | **0.5 m cells**; tile ~1108x1757 px (~554x878 m) | Raw tiles weight ~6 GB; kept locally (gitignored). Output GeoJSON of building heights goes to `web/public/data/processed/buildings_heights.geojson`. |
 
 ---
 
@@ -55,6 +56,7 @@ Check available public datasets useful to build a 3D urban prototype on Bologna,
 |---|---|---|---|---|---|---|---|
 | [Temperature Bologna](https://bologna.opendatasoft.com/explore/dataset/temperature_bologna/) | Open Data Bologna | Daily temperature | Opendatasoft export/API | - | Municipality of Bologna | **Daily** | For temporal analysis, not a spatial temperature raster. |
 | [Centraline qualità dell'aria (misurazioni giornaliere)](https://bologna.opendatasoft.com/explore/dataset/centraline-qualita-aria/?flg=it-it) | Open Data Bologna | Daily environmental station data for 3 Bologna stations: Giardini Margherita, Via Chiarini, Porta San Felice. | Opendatasoft export/API | Point/station based | 3 stations inside Bologna municipality | **Daily** | Useful for point-based environmental indicators; not a continuous surface. |
+| Velocita_Vento (raster) | shared dataset | Mean wind speed (m/s) as a continuous raster surface. Rendered in the viewer as a coloured overlay (MapLibre `image` source). See [10_wind-overlay.md](10_wind-overlay.md). | GeoTIFF (`04_Velocita_Vento.tif`, ~270 KB) | declared in the GeoTIFF metadata (reprojected to EPSG:4326 by the build script) | Sub-municipal | depends on source raster grid | Source/period to be confirmed before public release; current viewer colour scale assumes 0-6 m/s. |
 
 ---
 
