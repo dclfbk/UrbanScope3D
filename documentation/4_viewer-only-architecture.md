@@ -38,8 +38,8 @@ Niente servizio in mezzo. La CDN e' "il backend".
 | Vector tiling | building / land use / vegetation | `*.pmtiles` | `web/public/data/processed/` |
 | DTM reproject | DTM RDN32 | DTM EPSG:3857 | `data/` |
 | Terrain-RGB tile | DTM riproiettato | `terrain/{z}/{x}/{y}.png` | `web/public/data/processed/terrain/` |
-| **nDSM + zonal stats edifici** | DSM Leonardo (~500 .ASC) + DTM 2023 + footprint 1.1 | `buildings_heights.geojson` con `height` (p95 nDSM) | `web/public/data/processed/` (vedi [9_building-heights-pipeline.md](9_building-heights-pipeline.md)) |
-| **Overlay vento** | `04_Velocita_Vento.tif` | `wind_overlay.png` + `wind_overlay.json` (corners EPSG:4326) | `web/public/data/processed/` (vedi [10_wind-overlay.md](10_wind-overlay.md)) |
+| **nDSM + zonal stats edifici** | DSM Leonardo (~500 .ASC) + DTM 2023 + footprint 1.1 | `buildings_heights.geojson` con `height` (p95 nDSM) | `web/public/data/processed/` (vedi [9_viewer-expansion.md](9_viewer-expansion.md#building-heights-pipeline-ndsm)) |
+| **Overlay vento** | `04_Velocita_Vento.tif` | `wind_overlay.png` + `wind_overlay.json` (corners EPSG:4326) | `web/public/data/processed/` (vedi [9_viewer-expansion.md](9_viewer-expansion.md#wind-speed-overlay)) |
 | Air stations join | 5.2 + registry | `air_stations.geojson` | `web/public/data/processed/` |
 | Time series | 5.1 CSV | `temperature_<station>.json` | `web/public/data/processed/` |
 
@@ -58,10 +58,10 @@ Tre cose, basta.
 Sole guida la luce (Issue 6), ombre da pass runtime (Issue 7).
 
 L'extrusion 3D legge `feature.properties.height` quando disponibile (output
-della pipeline nDSM, vedi [9_building-heights-pipeline.md](9_building-heights-pipeline.md))
+della pipeline nDSM, vedi [9_viewer-expansion.md](9_viewer-expansion.md#building-heights-pipeline-ndsm))
 e ricade su `DEFAULT_BUILDING_HEIGHT = 15 m` per i footprint non coperti dal
 DSM. L'overlay vento e' un `image` source MapLibre con i 4 angoli letti da
-`processed/wind_overlay.json` (vedi [10_wind-overlay.md](10_wind-overlay.md)).
+`processed/wind_overlay.json` (vedi [9_viewer-expansion.md](9_viewer-expansion.md#wind-speed-overlay)).
 
 **Stile**: i layer paint/layout vivono nel codice (`web/components/Map/`).
 Categorical styling (es. uso suolo) usa `match` su property gia' bakate nei

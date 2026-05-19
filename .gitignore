@@ -27,6 +27,11 @@
 /web/public/data/DatiLeonardo_8-05-2026/
 /web/public/data/wetransfer_dsm_bologna_2026-05-08_1237.zip
 
+# Raster Envimet grezzi (~380 MB, 37 GeoTIFF multibanda) condivisi da
+# Leonardo. Input per la futura visualizzazione microclima; non versionati
+# finche' manca l'ancoraggio geografico (vedi 9_viewer-expansion.md).
+/web/public/data/Envimet_data/
+
 # Claude Code locale
 .claude/
 
