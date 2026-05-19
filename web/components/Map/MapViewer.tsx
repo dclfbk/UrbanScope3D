@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapboxOverlay } from '@deck.gl/mapbox'
@@ -35,16 +35,30 @@ type LayerKey =
   | 'air-stations'
   | 'wind'
 
-const LAYERS: { id: LayerKey; label: string; default: boolean }[] = [
-  { id: 'land-use', label: 'Uso del suolo 2020', default: false },
-  { id: 'buildings-particellari', label: 'Edifici (footprint 2D)', default: false },
-  { id: 'buildings-3d', label: 'Edifici 3D + ombre', default: true },
-  { id: 'trees', label: 'Alberi', default: true },
-  { id: 'green-areas', label: 'Aree verdi', default: true },
-  { id: 'parks', label: 'Parchi pubblici', default: false },
-  { id: 'private-green', label: 'Verde privato', default: false },
-  { id: 'air-stations', label: 'Qualità aria', default: false },
-  { id: 'wind', label: 'Velocità vento (m/s)', default: false },
+type CategoryKey = 'edifici' | 'verde' | 'ambiente' | 'territorio'
+
+const CATEGORIES: { key: CategoryKey; label: string; defaultOpen: boolean }[] = [
+  { key: 'edifici', label: 'Edifici', defaultOpen: true },
+  { key: 'verde', label: 'Verde', defaultOpen: true },
+  { key: 'ambiente', label: 'Ambiente', defaultOpen: false },
+  { key: 'territorio', label: 'Territorio', defaultOpen: false },
+]
+
+const LAYERS: {
+  id: LayerKey
+  label: string
+  default: boolean
+  category: CategoryKey
+}[] = [
+  { id: 'buildings-3d', label: 'Edifici 3D + ombre', default: true, category: 'edifici' },
+  { id: 'buildings-particellari', label: 'Edifici (footprint 2D)', default: false, category: 'edifici' },
+  { id: 'trees', label: 'Alberi', default: true, category: 'verde' },
+  { id: 'green-areas', label: 'Aree verdi', default: true, category: 'verde' },
+  { id: 'parks', label: 'Parchi pubblici', default: false, category: 'verde' },
+  { id: 'private-green', label: 'Verde privato', default: false, category: 'verde' },
+  { id: 'air-stations', label: 'Qualità aria', default: false, category: 'ambiente' },
+  { id: 'wind', label: 'Velocità vento (m/s)', default: false, category: 'ambiente' },
+  { id: 'land-use', label: 'Uso del suolo 2020', default: false, category: 'territorio' },
 ]
 
 const BUILDINGS_FOOTPRINT_URL = withBase('/data/1)Buildings/1.1_Edifici_Particellari.geojson')
@@ -260,6 +274,19 @@ export default function MapViewer() {
   const windAddedRef = useRef(false)
   const [basemap, setBasemap] = useState<BasemapId>('dark')
   const reapplyRef = useRef<(() => void) | null>(null)
+  const [collapsed, setCollapsed] = useState<Record<CategoryKey, boolean>>(
+    () =>
+      Object.fromEntries(
+        CATEGORIES.map((c) => [c.key, !c.defaultOpen]),
+      ) as Record<CategoryKey, boolean>,
+  )
+  const [bearing, setBearing] = useState(-20)
+  const [search, setSearch] = useState('')
+  const [searchResults, setSearchResults] = useState<
+    { label: string; lat: number; lon: number }[]
+  >([])
+  const [searching, setSearching] = useState(false)
+  const searchMarkerRef = useRef<maplibregl.Marker | null>(null)
 
   // Carica gli alberi una volta sola: prova prima il dataset OSM (Overpass),
   // fallback al DBTR clippato all'AOI.
@@ -585,6 +612,11 @@ export default function MapViewer() {
         map.getCanvas().style.cursor = ''
       })
 
+      const syncBearing = () => setBearing(map.getBearing())
+      map.on('rotate', syncBearing)
+      map.on('moveend', syncBearing)
+      syncBearing()
+
       setLoading(false)
     })
 
@@ -723,6 +755,51 @@ export default function MapViewer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basemap])
 
+  const resetNorth = () => {
+    mapRef.current?.easeTo({ bearing: 0, duration: 600 })
+  }
+
+  // Geocoding via Nominatim (OSM), limitato alla bbox di Bologna. Nessuna
+  // dipendenza extra: una fetch e flyTo sul risultato scelto.
+  const runSearch = async (e: FormEvent) => {
+    e.preventDefault()
+    const q = search.trim()
+    if (!q) return
+    setSearching(true)
+    try {
+      const url =
+        'https://nominatim.openstreetmap.org/search?format=jsonv2' +
+        '&limit=5&bounded=1&viewbox=11.25,44.55,11.45,44.45&q=' +
+        encodeURIComponent(`${q}, Bologna, Italia`)
+      const r = await fetch(url, { headers: { 'Accept-Language': 'it' } })
+      const data: { display_name: string; lat: string; lon: string }[] =
+        await r.json()
+      setSearchResults(
+        data.map((d) => ({
+          label: d.display_name,
+          lat: Number(d.lat),
+          lon: Number(d.lon),
+        })),
+      )
+    } catch {
+      setSearchResults([])
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const gotoResult = (res: { label: string; lat: number; lon: number }) => {
+    const map = mapRef.current
+    if (!map) return
+    map.flyTo({ center: [res.lon, res.lat], zoom: 16, duration: 1200 })
+    searchMarkerRef.current?.remove()
+    searchMarkerRef.current = new maplibregl.Marker({ color: '#22d3ee' })
+      .setLngLat([res.lon, res.lat])
+      .addTo(map)
+    setSearchResults([])
+    setSearch(res.label.split(',')[0])
+  }
+
   return (
     <div className="relative w-full h-full">
       {loading && (
@@ -735,38 +812,152 @@ export default function MapViewer() {
       )}
       <div ref={containerRef} className="w-full h-full" />
 
-      <div className="absolute top-4 left-4 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-3 backdrop-blur-sm shadow-xl">
+      {/* Search bar sticky, sempre visibile in alto */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 w-[min(420px,80vw)]">
+        <form
+          onSubmit={runSearch}
+          className="flex items-center gap-2 bg-gray-900/90 border border-cyan-400/30 rounded px-3 py-2 backdrop-blur-sm shadow-xl"
+        >
+          <span className="text-cyan-400/70 text-sm">⌕</span>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Cerca un indirizzo o un luogo a Bologna..."
+            className="flex-1 bg-transparent text-sm text-gray-100 placeholder:text-gray-500 outline-none font-mono"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearch('')
+                setSearchResults([])
+                searchMarkerRef.current?.remove()
+                searchMarkerRef.current = null
+              }}
+              className="text-gray-500 hover:text-cyan-300 text-sm"
+              aria-label="Pulisci ricerca"
+            >
+              ✕
+            </button>
+          )}
+          <button
+            type="submit"
+            disabled={searching}
+            className="text-cyan-300 hover:text-cyan-200 text-xs font-mono uppercase tracking-wider disabled:text-gray-600"
+          >
+            {searching ? '...' : 'Vai'}
+          </button>
+        </form>
+        {searchResults.length > 0 && (
+          <ul className="mt-1 bg-gray-900/95 border border-cyan-400/30 rounded backdrop-blur-sm shadow-xl overflow-hidden">
+            {searchResults.map((res, i) => (
+              <li key={i}>
+                <button
+                  type="button"
+                  onClick={() => gotoResult(res)}
+                  className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-cyan-400/10 hover:text-cyan-200 transition-colors border-b border-cyan-400/10 last:border-0"
+                >
+                  {res.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Bussola: il quadrante ruota con il bearing, click = riallinea a Nord */}
+      <button
+        type="button"
+        onClick={resetNorth}
+        title="Riallinea a Nord"
+        className="absolute top-4 right-4 z-10 w-12 h-12 rounded-full bg-gray-900/85 border border-cyan-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center hover:border-cyan-400/60 transition-colors"
+      >
+        <div
+          className="relative w-9 h-9"
+          style={{ transform: `rotate(${-bearing}deg)` }}
+        >
+          <span className="absolute top-0 left-1/2 -translate-x-1/2 text-[10px] font-bold text-red-400 leading-none">
+            N
+          </span>
+          <span className="absolute bottom-0 left-1/2 -translate-x-1/2 text-[9px] font-mono text-gray-400 leading-none">
+            S
+          </span>
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[9px] font-mono text-gray-400 leading-none">
+            O
+          </span>
+          <span className="absolute right-0 top-1/2 -translate-y-1/2 text-[9px] font-mono text-gray-400 leading-none">
+            E
+          </span>
+          <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-4 bg-gradient-to-b from-red-400 to-gray-500 rounded" />
+        </div>
+      </button>
+
+      <div className="absolute top-20 left-4 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-3 backdrop-blur-sm shadow-xl">
         <div className="text-cyan-400 text-xs font-mono uppercase tracking-widest mb-2">
           Layer
         </div>
-        <div className="flex flex-col gap-1.5 min-w-[220px]">
-          {LAYERS.map((l) => {
-            const disabled = l.id === 'wind' && !windOverlay
+        <div className="flex flex-col gap-1 min-w-[220px] max-h-[60vh] overflow-y-auto">
+          {CATEGORIES.map((cat) => {
+            const items = LAYERS.filter((l) => l.category === cat.key)
+            if (items.length === 0) return null
+            const isCollapsed = collapsed[cat.key]
+            const activeCount = items.filter((l) => visibility[l.id]).length
             return (
-              <label
-                key={l.id}
-                title={
-                  disabled
-                    ? 'Lancia scripts/build_wind_overlay.sh per generare l’overlay'
-                    : undefined
-                }
-                className={`flex items-center gap-2 text-sm transition-colors ${
-                  disabled
-                    ? 'text-gray-500 cursor-not-allowed'
-                    : 'text-gray-200 cursor-pointer hover:text-cyan-300'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  disabled={disabled}
-                  checked={visibility[l.id]}
-                  onChange={(e) =>
-                    setVisibility((v) => ({ ...v, [l.id]: e.target.checked }))
+              <div key={cat.key} className="border-b border-cyan-400/10 last:border-0 pb-1 mb-0.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCollapsed((c) => ({ ...c, [cat.key]: !c[cat.key] }))
                   }
-                  className="accent-cyan-400 cursor-pointer disabled:cursor-not-allowed"
-                />
-                <span>{l.label}</span>
-              </label>
+                  className="w-full flex items-center justify-between text-left text-[11px] font-mono uppercase tracking-wider text-cyan-300/90 hover:text-cyan-200 py-1"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-cyan-400/70 w-3 inline-block">
+                      {isCollapsed ? '▸' : '▾'}
+                    </span>
+                    {cat.label}
+                  </span>
+                  <span className="text-gray-500 text-[10px]">
+                    {activeCount}/{items.length}
+                  </span>
+                </button>
+                {!isCollapsed && (
+                  <div className="flex flex-col gap-1.5 pl-4 pt-1 pb-1">
+                    {items.map((l) => {
+                      const disabled = l.id === 'wind' && !windOverlay
+                      return (
+                        <label
+                          key={l.id}
+                          title={
+                            disabled
+                              ? 'Lancia scripts/build_wind_overlay.sh per generare l’overlay'
+                              : undefined
+                          }
+                          className={`flex items-center gap-2 text-sm transition-colors ${
+                            disabled
+                              ? 'text-gray-500 cursor-not-allowed'
+                              : 'text-gray-200 cursor-pointer hover:text-cyan-300'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={disabled}
+                            checked={visibility[l.id]}
+                            onChange={(e) =>
+                              setVisibility((v) => ({
+                                ...v,
+                                [l.id]: e.target.checked,
+                              }))
+                            }
+                            className="accent-cyan-400 cursor-pointer disabled:cursor-not-allowed"
+                          />
+                          <span>{l.label}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             )
           })}
         </div>
