@@ -25,6 +25,13 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* I popup MapLibre (stazioni aria, tooltip rumore) vivono dentro il
+   container mappa (z-auto); i pannelli UI sono z-10/z-20. Senza questo,
+   i popup finiscono SOTTO i pannelli. Li porto sopra. */
+.maplibregl-popup {
+  z-index: 30;
+}
+
 /* Slider del TimeSlider: il thumb diventa un sole o una luna a seconda
    che la posizione attuale corrisponda a giorno o notte. */
 .sun-moon-slider {

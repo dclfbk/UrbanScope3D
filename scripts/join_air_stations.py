@@ -72,52 +72,79 @@ def normalize(name: str) -> str | None:
     return None
 
 
+# L'agente_atm del dataset 5.2 e' testo ("NO2 (Biossido di azoto)", "PM10",
+# "PM2.5", "O3 (Ozono)", ...). Mappo per substring sulle 4 specie mostrate nel
+# popup; le altre (NO, NOX, CO, C6H6) sono ignorate.
+def agent_key(agente: str) -> str | None:
+    a = (agente or "").upper()
+    if "PM2.5" in a or "PM25" in a:
+        return "pm25"
+    if "PM10" in a:
+        return "pm10"
+    if "NO2" in a:
+        return "no2"
+    if a.startswith("O3") or "OZONO" in a:
+        return "ozone"
+    return None
+
+
 def load_air_records(path: Path) -> list[dict]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     feats = raw.get("features") if isinstance(raw, dict) else None
     if not feats:
         return []
+    # Formato lungo: una riga per (stazione, agente, ora) con campo `value`.
     out = []
     for f in feats:
         p = f.get("properties") or {}
-        # I campi tipici Opendatasoft per questo dataset:
-        # nome_stazione, data, no2_max, pm10_med, pm25_med, ozono_max, ...
-        station_name = (
-            p.get("nome_stazione") or p.get("station") or p.get("nome") or ""
-        )
-        sid = normalize(station_name)
-        if not sid:
+        sid = normalize(p.get("stazione") or p.get("nome_stazione") or "")
+        ak = agent_key(p.get("agente_atm") or "")
+        if not sid or not ak:
+            continue
+        v = p.get("value")
+        if not isinstance(v, (int, float)):
             continue
         out.append({
             "station_id": sid,
-            "date": p.get("data") or p.get("date"),
-            "no2": p.get("no2_max") or p.get("no2"),
-            "pm10": p.get("pm10_med") or p.get("pm10"),
-            "pm25": p.get("pm25_med") or p.get("pm25"),
-            "ozone": p.get("ozono_max") or p.get("o3"),
+            "date": p.get("reftime") or p.get("data") or p.get("date"),
+            "agent": ak,
+            "value": float(v),
         })
     return out
 
 
 def latest_per_station(records: list[dict], days: int) -> dict[str, dict]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    bucket: dict[str, list[dict]] = defaultdict(list)
+    # Finestra relativa all'ULTIMA data disponibile nel dataset (non a "oggi":
+    # i dati ARPAE arrivano con ritardo e potrebbero essere tutti fuori da una
+    # finestra ancorata a now()).
+    parsed = []
     for r in records:
         try:
-            d = datetime.fromisoformat(r["date"].replace("Z", "+00:00"))
+            d = datetime.fromisoformat((r["date"] or "").replace("Z", "+00:00"))
         except (TypeError, ValueError):
             continue
+        parsed.append((d, r))
+    if not parsed:
+        return {}
+    last = max(d for d, _ in parsed)
+    cutoff = last - timedelta(days=days)
+
+    bucket: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    counts: dict[str, int] = defaultdict(int)
+    for d, r in parsed:
         if d < cutoff:
             continue
-        bucket[r["station_id"]].append(r)
+        bucket[r["station_id"]][r["agent"]].append(r["value"])
+        counts[r["station_id"]] += 1
 
     summary: dict[str, dict] = {}
-    for sid, rows in bucket.items():
+    for sid, agents in bucket.items():
         def avg(key: str) -> float | None:
-            vals = [r[key] for r in rows if isinstance(r.get(key), (int, float))]
+            vals = agents.get(key) or []
             return round(sum(vals) / len(vals), 2) if vals else None
         summary[sid] = {
-            "samples": len(rows),
+            "samples": counts[sid],
+            "window_end": last.date().isoformat(),
             "no2_avg": avg("no2"),
             "pm10_avg": avg("pm10"),
             "pm25_avg": avg("pm25"),
