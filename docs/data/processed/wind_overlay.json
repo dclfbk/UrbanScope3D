@@ -1,0 +1,27 @@
+{
+  "source": "04_Velocita_Vento.tif",
+  "unit": "m/s",
+  "image": "/data/processed/wind_overlay.png",
+  "minmax_observed": "0.000,2.839",
+  "bounds": {
+    "west": 11.3340257,
+    "south": 44.4975555,
+    "east": 11.3455303,
+    "north": 44.5061926
+  },
+  "coordinates": [
+    [11.3340257, 44.5061926],
+    [11.3455303, 44.5061926],
+    [11.3455303, 44.4975555],
+    [11.3340257, 44.4975555]
+  ],
+  "legend": [
+    {"value": 0.5, "color": "#482371"},
+    {"value": 1.5, "color": "#404387"},
+    {"value": 2.5, "color": "#345e8d"},
+    {"value": 3.5, "color": "#29798e"},
+    {"value": 4.5, "color": "#22a884"},
+    {"value": 5.5, "color": "#7ad151"},
+    {"value": 6.5, "color": "#fde725"}
+  ]
+}

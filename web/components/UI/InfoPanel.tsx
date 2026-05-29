@@ -3,6 +3,8 @@
 import type { TempLookup } from '@/lib/temperature'
 import { t, tFmt, type Lang } from '@/lib/i18n'
 
+type EnvSample = { key: string; label: string; unit: string; value: number | null }
+
 type Props = {
   lat: number
   lon: number
@@ -10,6 +12,7 @@ type Props = {
   temp: TempLookup | null
   loading: boolean
   windSpeed: number | null
+  envSamples: EnvSample[]
   lang: Lang
   onClose: () => void
 }
@@ -21,6 +24,7 @@ export default function InfoPanel({
   temp,
   loading,
   windSpeed,
+  envSamples,
   lang,
   onClose,
 }: Props) {
@@ -29,7 +33,7 @@ export default function InfoPanel({
     { dateStyle: 'medium' },
   )
   return (
-    <div className="absolute top-16 sm:top-4 right-2 sm:right-4 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl w-[min(260px,calc(100vw-1rem))] sm:min-w-[260px]">
+    <div className="bg-gray-900/85 border border-cyan-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl w-full">
       <div className="flex items-center justify-between mb-2">
         <div className="text-cyan-400 text-xs font-mono uppercase tracking-widest">
           {t('point', lang)}
@@ -117,6 +121,24 @@ export default function InfoPanel({
           </div>
           <div className="text-gray-500 text-[10px] mt-1 italic">
             {t('windSource', lang)}
+          </div>
+        </>
+      )}
+
+      {envSamples.length > 0 && (
+        <>
+          <div className="text-cyan-400 text-xs font-mono uppercase tracking-widest mt-3 mb-1">
+            {t('microclimaValues', lang)}
+          </div>
+          <div className="text-gray-200 text-sm font-mono flex flex-col gap-0.5">
+            {envSamples.map((s) => (
+              <div key={s.key} className="flex justify-between gap-2">
+                <span className="text-gray-400">{s.label}</span>
+                <span className="text-cyan-200 whitespace-nowrap">
+                  {s.value != null ? `${s.value} ${s.unit}` : t('noData', lang)}
+                </span>
+              </div>
+            ))}
           </div>
         </>
       )}

@@ -12,10 +12,11 @@ import {
 } from '@deck.gl/core'
 import { GeoJsonLayer, ColumnLayer } from '@deck.gl/layers'
 import { SimpleMeshLayer } from '@deck.gl/mesh-layers'
-import { SphereGeometry } from '@luma.gl/engine'
+import { Geometry } from '@luma.gl/engine'
 import { getSunPosition, toMapLibreLight } from '@/lib/sun'
 import { computeSky, nightFactor } from '@/lib/sky'
 import { buildWindSampler, type WindSampler } from '@/lib/wind'
+import { buildEnvimetSampler, type EnvimetSampler } from '@/lib/envimet'
 import { t, type Lang, type StringKey } from '@/lib/i18n'
 import {
   loadTemperatureSeries,
@@ -35,10 +36,22 @@ import {
   withAlpha,
 } from '@/lib/palette'
 
+// Chiavi degli overlay microclima ENVI-met (devono combaciare con i `key`
+// in web/public/data/processed/envimet/overlays.json).
+type EnvimetKey =
+  | 'env-temperature'
+  | 'env-humidity'
+  | 'env-vegetation_lad'
+  | 'env-direct_sw'
+  | 'env-diffuse_sw'
+  | 'env-reflected_sw'
+  | 'env-mean_radiant_temp'
+
 type LayerKey =
   | 'land-use'
   | 'buildings-particellari'
   | 'buildings-3d'
+  | 'shadows'
   | 'buildings-temp'
   | 'trees'
   | 'green-areas'
@@ -46,8 +59,45 @@ type LayerKey =
   | 'private-green'
   | 'air-stations'
   | 'wind'
+  | 'noise'
+  | EnvimetKey
 
-type CategoryKey = 'edifici' | 'verde' | 'ambiente' | 'territorio'
+type CategoryKey = 'edifici' | 'verde' | 'ambiente' | 'microclima' | 'territorio'
+
+// Un overlay ENVI-met: PNG georeferenziato su 4 angoli (dominio ruotato) +
+// range/legenda per la UI. Caricato da envimet/overlays.json.
+type EnvimetOverlay = {
+  key: string
+  label: string
+  unit: string
+  image: string
+  values: string
+  range: { min: number; max: number }
+  bounds: { west: number; south: number; east: number; north: number }
+  coordinates: [
+    [number, number],
+    [number, number],
+    [number, number],
+    [number, number],
+  ]
+  legend: { value: number; color: string }[]
+}
+
+// Centralina qualita' aria (output di join_air_stations.py): punto + medie.
+type AirStation = {
+  geometry: { coordinates: [number, number] }
+  properties: {
+    id?: string
+    name?: string
+    type?: string
+    no2_avg?: number | null
+    pm10_avg?: number | null
+    pm25_avg?: number | null
+    ozone_avg?: number | null
+    samples?: number
+    window_end?: string
+  }
+}
 
 const CATEGORIES: {
   key: CategoryKey
@@ -57,16 +107,21 @@ const CATEGORIES: {
   { key: 'edifici', labelKey: 'cat_edifici', defaultOpen: true },
   { key: 'verde', labelKey: 'cat_verde', defaultOpen: true },
   { key: 'ambiente', labelKey: 'cat_ambiente', defaultOpen: false },
+  { key: 'microclima', labelKey: 'cat_microclima', defaultOpen: false },
   { key: 'territorio', labelKey: 'cat_territorio', defaultOpen: false },
 ]
 
+// rawLabel: etichetta diretta (non i18n) per i layer ENVI-met, che prendono
+// il nome dal JSON. Per gli altri layer si usa labelKey -> t().
 const LAYERS: {
   id: LayerKey
-  labelKey: StringKey
+  labelKey?: StringKey
+  rawLabel?: string
   default: boolean
   category: CategoryKey
 }[] = [
   { id: 'buildings-3d', labelKey: 'layer_buildings_3d', default: true, category: 'edifici' },
+  { id: 'shadows', labelKey: 'layer_shadows', default: true, category: 'edifici' },
   { id: 'buildings-particellari', labelKey: 'layer_buildings_2d', default: false, category: 'edifici' },
   { id: 'buildings-temp', labelKey: 'layer_buildings_temp', default: false, category: 'edifici' },
   { id: 'trees', labelKey: 'layer_trees', default: true, category: 'verde' },
@@ -75,8 +130,24 @@ const LAYERS: {
   { id: 'private-green', labelKey: 'layer_private_green', default: false, category: 'verde' },
   { id: 'air-stations', labelKey: 'layer_air', default: false, category: 'ambiente' },
   { id: 'wind', labelKey: 'layer_wind', default: false, category: 'ambiente' },
+  { id: 'noise', labelKey: 'layer_noise', default: false, category: 'ambiente' },
+  // Overlay microclima ENVI-met (PNG 3x3 m sul dominio Talea). rawLabel
+  // allineato ai `label` di overlays.json.
+  { id: 'env-temperature', rawLabel: 'Temperatura aria', default: false, category: 'microclima' },
+  { id: 'env-mean_radiant_temp', rawLabel: 'Mean Radiant Temp.', default: false, category: 'microclima' },
+  { id: 'env-humidity', rawLabel: 'Umidità relativa', default: false, category: 'microclima' },
+  { id: 'env-direct_sw', rawLabel: 'Radiazione diretta', default: false, category: 'microclima' },
+  { id: 'env-diffuse_sw', rawLabel: 'Radiazione diffusa', default: false, category: 'microclima' },
+  { id: 'env-reflected_sw', rawLabel: 'Radiazione riflessa', default: false, category: 'microclima' },
+  { id: 'env-vegetation_lad', rawLabel: 'Vegetazione (LAD)', default: false, category: 'microclima' },
   { id: 'land-use', labelKey: 'layer_landuse', default: false, category: 'territorio' },
 ]
+
+// URL del meta unico degli overlay ENVI-met.
+const ENVIMET_OVERLAYS_URL = withBase('/data/processed/envimet/overlays.json')
+
+// Mappa key overlay -> id layer/source MapLibre.
+const envLayerId = (key: string) => `env-${key}`
 
 const BUILDINGS_FOOTPRINT_URL = withBase('/data/1)Buildings/1.1_Edifici_Particellari.geojson')
 const BUILDINGS_HEIGHTS_URL = withBase('/data/processed/buildings_heights.geojson')
@@ -88,6 +159,7 @@ const GREEN_URL = withBase('/data/green.geojson')
 const PARKS_URL = withBase('/data/2)Vegetation/2.1_Aree_Verdi_In_Manutenzione.geojson')
 const PRIVATE_GREEN_URL = withBase('/data/2)Vegetation/2.2_Verde_Privato_Urbanizzato.geojson')
 const AIR_STATIONS_URL = withBase('/data/processed/air_stations.geojson')
+const NOISE_URL = withBase('/data/processed/noise_roads.geojson')
 const QUARTIERI_URL = withBase('/data/processed/quartieri.geojson')
 
 type BasemapId = 'dark' | 'satellite' | 'ortofoto'
@@ -171,15 +243,61 @@ type WindOverlay = {
 const AOI_CENTER: [number, number] = [11.343720439501553, 44.49989258707834]
 const DEFAULT_BUILDING_HEIGHT = 15
 
-// Albero stilizzato: tronco cilindrico + chioma sferica (no asset esterni).
+// Albero stilizzato: tronco cilindrico + chioma a CONI sovrapposti (abete
+// low-poly), generata proceduralmente (nessun asset esterno copiato).
 const TRUNK_HEIGHT = 3.2
 const TRUNK_RADIUS = 0.32
 const CANOPY_RADIUS = 2.6
-const CANOPY_GEOMETRY = new SphereGeometry({
-  radius: 1,
-  nlat: 14,
-  nlong: 14,
-})
+
+// Mesh di un alberello a 3 tier conici, asse su +Z (base z=0, apice z~1.3).
+// Plain mesh {positions, normals, indices} cosi' deck.gl SimpleMeshLayer lo
+// disegna dritto in su senza ambiguita' di orientamento (a differenza di una
+// ConeGeometry luma.gl, il cui asse e' su Y).
+function makeFirMesh() {
+  const seg = 12
+  const positions: number[] = []
+  const normals: number[] = []
+  const indices: number[] = []
+  let idx = 0
+  const tiers = [
+    { z0: 0.0, r: 1.0, h: 0.65 },
+    { z0: 0.45, r: 0.72, h: 0.62 },
+    { z0: 0.82, r: 0.44, h: 0.5 },
+  ]
+  for (const { z0, r, h } of tiers) {
+    const zApex = z0 + h
+    const nrm = (a: number) => {
+      const nx = Math.cos(a) * h
+      const ny = Math.sin(a) * h
+      const nz = r
+      const l = Math.hypot(nx, ny, nz) || 1
+      return [nx / l, ny / l, nz / l]
+    }
+    for (let i = 0; i < seg; i++) {
+      const a0 = (i / seg) * Math.PI * 2
+      const a1 = ((i + 1) / seg) * Math.PI * 2
+      const am = (a0 + a1) / 2
+      positions.push(
+        Math.cos(a0) * r, Math.sin(a0) * r, z0,
+        Math.cos(a1) * r, Math.sin(a1) * r, z0,
+        0, 0, zApex,
+      )
+      const n0 = nrm(a0), n1 = nrm(a1), na = nrm(am)
+      normals.push(...n0, ...n1, ...na)
+      indices.push(idx, idx + 1, idx + 2)
+      idx += 3
+    }
+  }
+  return new Geometry({
+    topology: 'triangle-list',
+    attributes: {
+      POSITION: { value: new Float32Array(positions), size: 3 },
+      NORMAL: { value: new Float32Array(normals), size: 3 },
+    },
+    indices: { value: new Uint16Array(indices), size: 1 },
+  })
+}
+const TREE_MESH = makeFirMesh()
 
 type TreePoint = { position: [number, number]; seed: number }
 
@@ -190,26 +308,42 @@ function hashSeed(lon: number, lat: number): number {
   return x - Math.floor(x)
 }
 
-function buildLightingEffect(timestamp: number): LightingEffect {
+function buildLightingEffect(
+  timestamp: number,
+  shadowsOn: boolean,
+): LightingEffect {
+  // Di notte (sole sotto l'orizzonte) spengo sole + ombre: altrimenti
+  // deck.gl proietta ombre lunghissime/assurde da una sorgente che e'
+  // sotto il terreno. Lascio solo un ambient piu' alto per leggibilita'.
+  // `shadowsOn` e' il toggle "Ombre" (richiede "Edifici 3D").
+  const sunPos = getSunPosition(
+    new Date(timestamp),
+    AOI_CENTER[1],
+    AOI_CENTER[0],
+  )
+  const isDay = sunPos.altitudeDeg > 0
+  const shadowsActive = isDay && shadowsOn
+  // IMPORTANTE: `_shadow` dipende SOLO dal giorno/notte, NON dal toggle
+  // "Ombre". Cambiare `_shadow` a runtime ricostruisce il modulo ombre di
+  // deck.gl e su alcune GPU lascia la scena vuota (edifici spariti). Tenendolo
+  // costante (sempre acceso di giorno) il modulo non si ricostruisce mai;
+  // il toggle "Ombre" agisce solo sulla TRASPARENZA dell'ombra (shadowColor
+  // alpha 0..1), che e' un semplice cambio di uniform.
   const sun = new SunLight({
     timestamp,
     color: [255, 255, 255],
-    intensity: 1.5,
-    _shadow: true,
+    intensity: isDay ? 1.5 : 0,
+    _shadow: isDay,
   })
   const ambient = new AmbientLight({
     color: [255, 255, 255],
-    intensity: 1.0,
+    intensity: isDay ? 1.0 : 0.6,
   })
   const effect = new LightingEffect({ sun, ambient })
-  ;(effect as unknown as { shadowColor: number[] }).shadowColor = [
-    0, 0, 0, 0.45,
-  ]
+  ;(effect as unknown as { shadowColor: number[] }).shadowColor = shadowsActive
+    ? [0, 0, 0, 0.5]
+    : [0, 0, 0, 0]
   return effect
-}
-
-type BuildingFeature = {
-  properties?: { height?: number } | null
 }
 
 type QuartiereFeature = {
@@ -264,54 +398,71 @@ function buildSelectedQuartiereLayer(
   })
 }
 
-// Mappatura temperatura aria -> RGB. 3 stop (cool/temperate/hot)
-// con interpolazione lineare. Range scelto per Bologna (storico ~5-35 C).
-function tempToColor(tempC: number): [number, number, number] {
-  const COOL: [number, number, number] = [56, 132, 220] // blue-500ish
-  const MILD: [number, number, number] = [234, 200, 100] // warm gold
-  const HOT: [number, number, number] = [220, 60, 50] // tomato red
-  const lerp = (a: number, b: number, t: number) => Math.round(a + (b - a) * t)
-  const lerp3 = (
-    A: [number, number, number],
-    B: [number, number, number],
-    t: number,
-  ): [number, number, number] => [
-    lerp(A[0], B[0], t),
-    lerp(A[1], B[1], t),
-    lerp(A[2], B[2], t),
+// Rampa giallo -> rosso (YlOrRd) per la temperatura, normalizzata su [min,max].
+// Stessa rampa usata nella pipeline ENVI-met (build_envimet_overlays.py) e
+// nella legenda, cosi' edifici e overlay parlano la stessa lingua cromatica.
+const YLORRD: [number, number, number][] = [
+  [255, 255, 178],
+  [254, 217, 118],
+  [254, 178, 76],
+  [253, 141, 60],
+  [189, 0, 38],
+]
+
+function ylOrRd(t: number): [number, number, number] {
+  const x = Math.max(0, Math.min(1, t)) * (YLORRD.length - 1)
+  const i = Math.floor(x)
+  const f = x - i
+  const a = YLORRD[i]
+  const b = YLORRD[Math.min(i + 1, YLORRD.length - 1)]
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * f),
+    Math.round(a[1] + (b[1] - a[1]) * f),
+    Math.round(a[2] + (b[2] - a[2]) * f),
   ]
-  if (tempC <= 5) return COOL
-  if (tempC >= 35) return HOT
-  if (tempC <= 22) return lerp3(COOL, MILD, (tempC - 5) / 17)
-  return lerp3(MILD, HOT, (tempC - 22) / 13)
+}
+
+// Grigio per edifici senza dato di temperatura (fuori dal dominio ENVI-met).
+const BUILDING_GREY: [number, number, number] = [120, 124, 130]
+
+type BuildingTempFeature = {
+  properties?: { height?: number; air_temp?: number } | null
 }
 
 function buildShadowBuildingsLayer(
   visible: boolean,
   dataUrl: string,
-  tempColorize: number | null,
+  // Se valorizzato, gli edifici sono colorati per `air_temp` (ENVI-met)
+  // normalizzata su questo range; chi non ha il dato resta grigio.
+  tempRange: { min: number; max: number } | null,
 ): GeoJsonLayer | null {
   if (!visible) return null
-  const fill =
-    tempColorize != null
-      ? ([...tempToColor(tempColorize), 240] as [number, number, number, number])
-      : withAlpha(BOLOGNA_OCRA, 240)
+  const solidOcra = withAlpha(BOLOGNA_OCRA, 240)
+  const getFillColor = tempRange
+    ? (f: BuildingTempFeature): [number, number, number, number] => {
+        const tC = f.properties?.air_temp
+        if (typeof tC !== 'number')
+          return [...BUILDING_GREY, 235] as [number, number, number, number]
+        const tNorm = (tC - tempRange.min) / (tempRange.max - tempRange.min || 1)
+        return [...ylOrRd(tNorm), 245] as [number, number, number, number]
+      }
+    : solidOcra
   return new GeoJsonLayer({
     id: 'buildings-shadow',
     data: dataUrl,
     stroked: true,
     filled: true,
     extruded: true,
-    getElevation: (f: BuildingFeature) => {
+    getElevation: (f: BuildingTempFeature) => {
       const h = f.properties?.height
       return typeof h === 'number' && h > 0 ? h : DEFAULT_BUILDING_HEIGHT
     },
-    getFillColor: fill,
+    getFillColor,
     getLineColor: withAlpha(BOLOGNA_SANGIOVESE, 255),
     lineWidthMinPixels: 0.5,
     pickable: false,
     updateTriggers: {
-      getFillColor: [tempColorize],
+      getFillColor: [tempRange?.min, tempRange?.max],
     },
     material: {
       ambient: 0.4,
@@ -344,35 +495,39 @@ function buildTreesLayers(
       specularColor: [40, 30, 20],
     },
   })
+  // Chioma a DUE lobi (sfere) per evitare la "palla su stecco": un lobo
+  // principale ovale che scende a coprire la cima del tronco + un lobo
+  // secondario piu' piccolo sfalsato. Tutto con SphereGeometry (simmetrica,
+  // nessun problema di orientamento del mesh).
+  const trunkTopOf = (d: TreePoint) => TRUNK_HEIGHT * (0.85 + d.seed * 0.4)
+  const canopyColor = (d: TreePoint): [number, number, number, number] => {
+    const g = 110 + Math.round(d.seed * 50)
+    const r = 50 + Math.round(d.seed * 30)
+    const b = 55 + Math.round((1 - d.seed) * 35)
+    return [r, g, b, 245]
+  }
+  const canopyMaterial = {
+    ambient: 0.35,
+    diffuse: 0.9,
+    shininess: 6,
+    specularColor: [50, 80, 50] as [number, number, number],
+  }
+  // Chioma: abete low-poly a coni (TREE_MESH), base sulla cima del tronco.
+  // getScale [s, s, sz]: s = raggio chioma, sz = altezza (il mesh va da z=0
+  // a ~1.3, quindi l'altezza reale e' ~1.3*sz).
   const canopy = new SimpleMeshLayer<TreePoint>({
     id: 'trees-canopy',
     data,
-    mesh: CANOPY_GEOMETRY,
+    mesh: TREE_MESH,
     pickable: false,
     getPosition: (d) => d.position,
-    // Translation in metri sull'asse z (up): la chioma sta sopra al tronco.
-    getTranslation: (d) => [
-      0,
-      0,
-      TRUNK_HEIGHT * (0.85 + d.seed * 0.4) + CANOPY_RADIUS * 0.75,
-    ],
+    getTranslation: (d) => [0, 0, trunkTopOf(d) - 0.3],
     getScale: (d) => {
-      const s = CANOPY_RADIUS * (0.8 + d.seed * 0.55)
-      return [s, s, s * (0.85 + d.seed * 0.2)]
+      const s = CANOPY_RADIUS * (0.8 + d.seed * 0.45)
+      return [s, s, s * (1.9 + d.seed * 0.7)]
     },
-    getColor: (d) => {
-      // Verdi un po' diversi per albero, tono caldo o freddo a seconda del seed.
-      const g = 110 + Math.round(d.seed * 50)
-      const r = 50 + Math.round(d.seed * 30)
-      const b = 55 + Math.round((1 - d.seed) * 35)
-      return [r, g, b, 245]
-    },
-    material: {
-      ambient: 0.35,
-      diffuse: 0.9,
-      shininess: 6,
-      specularColor: [50, 80, 50],
-    },
+    getColor: canopyColor,
+    material: canopyMaterial,
   })
   return [trunk, canopy]
 }
@@ -398,18 +553,42 @@ export default function MapViewer({ lang }: MapViewerProps) {
   )
   const [trees, setTrees] = useState<TreePoint[] | null>(null)
   const [tempRecords, setTempRecords] = useState<TempRecord[] | null>(null)
-  const [probe, setProbe] = useState<{
-    lat: number
-    lon: number
-    windSpeed: number | null
-  } | null>(null)
+  const [probe, setProbe] = useState<{ lat: number; lon: number } | null>(null)
+  // Valori campionati al punto cliccato, derivati da `probe` + layer attivi:
+  // vento solo se il layer 'wind' e' acceso, microclima per ogni overlay
+  // ENVI-met spuntato.
+  const [pointWind, setPointWind] = useState<number | null>(null)
+  const [pointEnv, setPointEnv] = useState<
+    { key: string; label: string; unit: string; value: number | null }[]
+  >([])
   const windSamplerRef = useRef<WindSampler | null>(null)
+  // Sampler ENVI-met per variabile (lazy: caricati quando l'overlay e'
+  // acceso). `requested` evita fetch doppi; `samplersReady` ri-triggera il
+  // calcolo dei valori quando un sampler finisce di caricare.
+  const envSamplersRef = useRef<Record<string, EnvimetSampler>>({})
+  const envRequestedRef = useRef<Set<string>>(new Set())
+  const [samplersReady, setSamplersReady] = useState(0)
+  // Segnaposto "Google Maps" del punto cliccato sulla mappa.
+  const probeMarkerRef = useRef<maplibregl.Marker | null>(null)
+  // Stazioni qualita' aria (marker DOM, sempre sopra agli edifici 3D).
+  const [airStations, setAirStations] = useState<AirStation[] | null>(null)
+  const airMarkersRef = useRef<maplibregl.Marker[]>([])
+  // Rumore: tooltip che segue il mouse + audio Web Audio (hiss proporzionale
+  // ai dB della strada sotto al cursore).
+  const noiseTipRef = useRef<maplibregl.Popup | null>(null)
+  const audioRef = useRef<{ ctx: AudioContext; gain: GainNode } | null>(null)
   const [tempLookup, setTempLookup] = useState<TempLookup | null>(null)
   const [buildingsUrl, setBuildingsUrl] = useState<string>(
     BUILDINGS_FOOTPRINT_URL,
   )
   const [windOverlay, setWindOverlay] = useState<WindOverlay | null>(null)
   const windAddedRef = useRef(false)
+  // Overlay microclima ENVI-met: stato per la UI (legenda, toggle abilitati),
+  // ref per le callback registrate al mount (addCustomLayers).
+  const [envimetOverlays, setEnvimetOverlays] = useState<EnvimetOverlay[] | null>(
+    null,
+  )
+  const envimetRef = useRef<EnvimetOverlay[] | null>(null)
   const [basemap, setBasemap] = useState<BasemapId>('dark')
   const reapplyRef = useRef<(() => void) | null>(null)
   const [collapsed, setCollapsed] = useState<Record<CategoryKey, boolean>>(
@@ -485,6 +664,27 @@ export default function MapViewer({ lang }: MapViewerProps) {
         if (!cancelled && r.ok) setBuildingsUrl(BUILDINGS_HEIGHTS_URL)
       })
       .catch(() => {})
+    // Stazioni qualita' aria: carico il geojson (se esiste) e lo metto in
+    // stato; i marker DOM vengono creati da un effect dedicato.
+    fetch(AIR_STATIONS_URL)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((fc) => {
+        if (cancelled || !fc || !Array.isArray(fc.features)) return
+        setAirStations(fc.features as AirStation[])
+      })
+      .catch(() => {})
+    // Overlay microclima ENVI-met (output di build_envimet_overlays.py). Se il
+    // file non c'e' ancora, i toggle 'Microclima' restano disabilitati.
+    fetch(ENVIMET_OVERLAYS_URL)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((meta) => {
+        if (cancelled || !meta || !Array.isArray(meta.overlays)) return
+        envimetRef.current = meta.overlays as EnvimetOverlay[]
+        setEnvimetOverlays(meta.overlays as EnvimetOverlay[])
+        const map = mapRef.current
+        if (map && map.isStyleLoaded()) reapplyRef.current?.()
+      })
+      .catch(() => {})
     fetch(WIND_META_URL)
       .then((r) => {
         if (!r.ok) {
@@ -535,7 +735,10 @@ export default function MapViewer({ lang }: MapViewerProps) {
       imageUrl: windOverlay.png,
     })
       .then((s) => {
-        if (!cancelled) windSamplerRef.current = s
+        if (!cancelled) {
+          windSamplerRef.current = s
+          setSamplersReady((v) => v + 1)
+        }
       })
       .catch((err) => console.warn('[wind] sampler build', err))
     return () => {
@@ -543,6 +746,112 @@ export default function MapViewer({ lang }: MapViewerProps) {
       windSamplerRef.current = null
     }
   }, [windOverlay])
+
+  // Carica (lazy) i sampler ENVI-met per gli overlay attualmente accesi, e
+  // calcola i valori al punto cliccato. Vedi lib/envimet.ts per il
+  // posizionamento sul dominio ruotato.
+  useEffect(() => {
+    const overlays = envimetOverlays ?? []
+    let cancelled = false
+    for (const o of overlays) {
+      const on = visibility[envLayerId(o.key) as LayerKey]
+      if (!on || envRequestedRef.current.has(o.key)) continue
+      envRequestedRef.current.add(o.key)
+      fetch(withBase(o.values))
+        .then((r) => (r.ok ? r.json() : null))
+        .then((grid) => {
+          if (cancelled || !grid) return
+          envSamplersRef.current[o.key] = buildEnvimetSampler(
+            o.coordinates,
+            grid,
+          )
+          setSamplersReady((v) => v + 1)
+        })
+        .catch(() => {
+          envRequestedRef.current.delete(o.key)
+        })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [visibility, envimetOverlays])
+
+  // Deriva i valori al punto cliccato dai layer attivi + sampler pronti.
+  useEffect(() => {
+    if (!probe) {
+      setPointWind(null)
+      setPointEnv([])
+      return
+    }
+    const { lat, lon } = probe
+    setPointWind(
+      visibility['wind'] && windSamplerRef.current
+        ? windSamplerRef.current(lon, lat)
+        : null,
+    )
+    const active = (envimetRef.current ?? []).filter(
+      (o) => visibility[envLayerId(o.key) as LayerKey],
+    )
+    setPointEnv(
+      active.map((o) => ({
+        key: o.key,
+        label: o.label,
+        unit: o.unit,
+        value: envSamplersRef.current[o.key]?.(lon, lat) ?? null,
+      })),
+    )
+  }, [probe, visibility, envimetOverlays, samplersReady])
+
+  // Marker DOM delle stazioni qualita' aria (sempre sopra agli edifici 3D,
+  // che con deck.gl occluderebbero i cerchi MapLibre). Click -> popup con le
+  // medie inquinanti. Ricreati quando cambiano i dati o il toggle.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    airMarkersRef.current.forEach((m) => m.remove())
+    airMarkersRef.current = []
+    if (!airStations || !visibility['air-stations']) return
+    for (const s of airStations) {
+      const [lon, lat] = s.geometry.coordinates
+      const el = document.createElement('div')
+      el.style.cssText =
+        'width:15px;height:15px;border-radius:50%;background:#22d3ee;' +
+        'border:2px solid #0e7490;box-shadow:0 0 8px 3px rgba(34,211,238,.45);' +
+        'cursor:pointer'
+      const p = s.properties
+      const row = (v: number | null | undefined, label: string) =>
+        v != null
+          ? `<div style="display:flex;justify-content:space-between;gap:10px;"><span>${label}</span><b>${v} µg/m³</b></div>`
+          : ''
+      const html =
+        `<div style="font-family:ui-monospace,monospace;font-size:12px;color:#222;min-width:150px;">` +
+        `<div style="color:#0e7490;font-weight:700;margin-bottom:2px;">${p.name ?? 'Stazione'}</div>` +
+        (p.type ? `<div style="color:#777;margin-bottom:4px;">${p.type}</div>` : '') +
+        row(p.no2_avg, 'NO₂') +
+        row(p.pm10_avg, 'PM10') +
+        row(p.pm25_avg, 'PM2.5') +
+        row(p.ozone_avg, 'O₃') +
+        (p.samples
+          ? `<div style="color:#999;margin-top:4px;">media ${p.samples} campioni${p.window_end ? ` · al ${p.window_end}` : ''}</div>`
+          : '') +
+        `</div>`
+      const popup = new maplibregl.Popup({
+        closeButton: true,
+        offset: 16,
+        anchor: 'bottom', // compare SOPRA il punto
+        className: 'us3d-popup',
+      }).setHTML(html)
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([lon, lat])
+        .setPopup(popup)
+        .addTo(map)
+      airMarkersRef.current.push(marker)
+    }
+    return () => {
+      airMarkersRef.current.forEach((m) => m.remove())
+      airMarkersRef.current = []
+    }
+  }, [airStations, visibility])
 
   // Carica i 6 quartieri di Bologna (Open Data Bologna - aree statistiche
   // raggruppate per `cod_quar` in build_quartieri.py). Usati per la search
@@ -570,6 +879,32 @@ export default function MapViewer({ lang }: MapViewerProps) {
     }
     setTempLookup(lookupTemperature(tempRecords, currentTime))
   }, [probe, tempRecords, currentTime])
+
+  // Segnaposto del punto cliccato (stile Google Maps): un pin ambra sul
+  // punto selezionato. Si sposta al click successivo e sparisce alla
+  // chiusura dell'InfoPanel (probe -> null).
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (!probe) {
+      probeMarkerRef.current?.remove()
+      probeMarkerRef.current = null
+      return
+    }
+    if (!probeMarkerRef.current) {
+      // Colore del brand UrbanScope3D (text-cyan-400 = #22d3ee).
+      const marker = new maplibregl.Marker({ color: '#22d3ee' })
+        .setLngLat([probe.lon, probe.lat])
+        .addTo(map)
+      // Sempre sopra a tutto: MapLibre assegna lo z-index ai marker per
+      // ordinamento prospettico, lo forzo alto cosi' il pin non viene mai
+      // occluso dagli edifici 3D ne' dagli altri marker (es. ricerca).
+      marker.getElement().style.zIndex = '9999'
+      probeMarkerRef.current = marker
+    } else {
+      probeMarkerRef.current.setLngLat([probe.lon, probe.lat])
+    }
+  }, [probe])
 
   // Costruzione mappa.
   useEffect(() => {
@@ -639,28 +974,13 @@ export default function MapViewer({ lang }: MapViewerProps) {
         })
       }
 
-      if (!map.getSource('openmaptiles')) {
-        map.addSource('openmaptiles', {
-          type: 'vector',
-          url: 'https://tiles.openfreemap.org/planet',
-        })
-      }
-      if (!map.getLayer('osm-buildings-context')) {
-        map.addLayer({
-          id: 'osm-buildings-context',
-          source: 'openmaptiles',
-          'source-layer': 'building',
-          type: 'fill-extrusion',
-          minzoom: 13,
-          paint: {
-            'fill-extrusion-color': 'rgb(60, 75, 95)',
-            'fill-extrusion-height': ['get', 'render_height'],
-            'fill-extrusion-base': ['get', 'render_min_height'],
-            'fill-extrusion-opacity': 0.85,
-          },
-          layout: { visibility: visibility['buildings-3d'] ? 'visible' : 'none' },
-        })
-      }
+      // NB: edifici 3D OSM (openfreemap) DISATTIVATI. Si sovrapponevano agli
+      // edifici Open Data Bologna estrusi da deck.gl (altezze diverse) ->
+      // "edifici doppi", z-fighting/sfarfallio e ombre incoerenti (es. lo
+      // stadio appariva con una struttura/ombra piu' alta del reale, perche'
+      // il `render_height` OSM differiva). I dati Open Data coprono tutto il
+      // comune, quindi gli OSM erano ridondanti. Per riattivarli come solo
+      // contesto lontano serve un clip fuori dall'AOI (qui non disponibile).
 
       if (!map.getSource('green')) {
         map.addSource('green', { type: 'geojson', data: GREEN_URL })
@@ -715,43 +1035,80 @@ export default function MapViewer({ lang }: MapViewerProps) {
         })
       }
 
-      // Stazioni qualita' aria (output di scripts/join_air_stations.py).
-      // Se il file non esiste ancora, MapLibre logga un fetch error ma il
-      // viewer continua a funzionare.
-      if (!map.getSource('air-stations')) {
-        map.addSource('air-stations', {
-          type: 'geojson',
-          data: AIR_STATIONS_URL,
-        })
+      // Rumore acustico (stima da classe strada, build_noise.py). Linee
+      // colorate per dB: verde quieto -> rosso rumoroso. E' un layer di
+      // terra; gli edifici 3D deck.gl possono coprirne dei tratti, ma le
+      // strade stanno fra gli edifici quindi si leggono bene.
+      if (!map.getSource('noise')) {
+        map.addSource('noise', { type: 'geojson', data: NOISE_URL })
       }
-      if (!map.getLayer('air-stations-glow')) {
+      if (!map.getLayer('noise')) {
         map.addLayer({
-          id: 'air-stations-glow',
-          source: 'air-stations',
-          type: 'circle',
+          id: 'noise',
+          source: 'noise',
+          type: 'line',
           paint: {
-            'circle-radius': 18,
-            'circle-color': '#22d3ee',
-            'circle-opacity': 0.25,
-            'circle-blur': 0.6,
+            'line-color': [
+              'interpolate', ['linear'], ['get', 'noise_db'],
+              50, '#22c55e',
+              58, '#84cc16',
+              65, '#eab308',
+              72, '#f97316',
+              78, '#ef4444',
+            ],
+            'line-width': [
+              'interpolate', ['linear'], ['get', 'noise_db'],
+              50, 1.2,
+              78, 5,
+            ],
+            'line-opacity': 0.85,
           },
-          layout: { visibility: initialVis('air-stations') },
+          layout: {
+            visibility: initialVis('noise'),
+            'line-cap': 'round',
+            'line-join': 'round',
+          },
         })
       }
-      if (!map.getLayer('air-stations')) {
-        map.addLayer({
-          id: 'air-stations',
-          source: 'air-stations',
-          type: 'circle',
-          paint: {
-            'circle-radius': 6,
-            'circle-color': '#22d3ee',
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#0e7490',
-          },
-          layout: { visibility: initialVis('air-stations') },
-        })
+
+      // Overlay microclima ENVI-met: una image source per variabile, sul
+      // dominio ruotato (4 angoli). Stanno sotto agli edifici 3D (beforeId),
+      // resampling 'nearest' per non sfumare i blocchi 3x3 m. Visibilita'
+      // iniziale 'none', gestita dal toggle effect.
+      const envBeforeId = map.getLayer('osm-buildings-context')
+        ? 'osm-buildings-context'
+        : undefined
+      for (const o of envimetRef.current ?? []) {
+        const id = envLayerId(o.key)
+        if (!map.getSource(id)) {
+          map.addSource(id, {
+            type: 'image',
+            url: withBase(o.image),
+            coordinates: o.coordinates,
+          })
+        }
+        if (!map.getLayer(id)) {
+          map.addLayer(
+            {
+              id,
+              source: id,
+              type: 'raster',
+              paint: {
+                'raster-opacity': 0.82,
+                'raster-resampling': 'nearest',
+              },
+              layout: {
+                visibility: visibility[id as LayerKey] ? 'visible' : 'none',
+              },
+            },
+            envBeforeId,
+          )
+        }
       }
+
+      // Stazioni qualita' aria: NON sono piu' layer MapLibre (verrebbero
+      // occluse dagli edifici 3D deck.gl, che disegnano sopra tutto). Sono
+      // marker DOM (vedi effect dedicato), sempre in primo piano.
     }
 
     // Lo stile dark-matter (CartoCDN) ha background nero: sui bordi dei
@@ -777,7 +1134,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
 
       const overlay = new MapboxOverlay({
         interleaved: false,
-        effects: [buildLightingEffect(currentTime.getTime())],
+        effects: [
+          buildLightingEffect(
+            currentTime.getTime(),
+            visibility['shadows'] && visibility['buildings-3d'],
+          ),
+        ],
         layers: [
           buildShadowBuildingsLayer(
             LAYERS.find((l) => l.id === 'buildings-3d')!.default,
@@ -798,44 +1160,76 @@ export default function MapViewer({ lang }: MapViewerProps) {
       map.setSky(computeSky(sun0.altitudeDeg))
 
       map.on('click', (e) => {
-        const lat = e.lngLat.lat
-        const lon = e.lngLat.lng
-        const windSpeed = windSamplerRef.current
-          ? windSamplerRef.current(lon, lat)
-          : null
-        setProbe({ lat, lon, windSpeed })
+        // I valori (vento / microclima) sono derivati in un effect dai layer
+        // attivi: qui registro solo il punto.
+        setProbe({ lat: e.lngLat.lat, lon: e.lngLat.lng })
       })
 
-      // Popup centraline qualita' aria.
-      map.on('click', 'air-stations', (e) => {
+      // Rumore: hover su una strada -> tooltip con i dB + hiss audio
+      // proporzionale (Web Audio). L'AudioContext si crea/riprende solo
+      // all'hover (serve un gesto utente per la policy autoplay).
+      const ensureNoiseAudio = () => {
+        if (audioRef.current) return audioRef.current
+        try {
+          const Ctx =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext: typeof AudioContext })
+              .webkitAudioContext
+          const ctx = new Ctx()
+          const n = 2 * ctx.sampleRate
+          const buffer = ctx.createBuffer(1, n, ctx.sampleRate)
+          const ch = buffer.getChannelData(0)
+          let last = 0
+          for (let i = 0; i < n; i++) {
+            const white = Math.random() * 2 - 1
+            last = (last + 0.02 * white) / 1.02 // rumore "rosa" approssimato
+            ch[i] = last * 3.5
+          }
+          const src = ctx.createBufferSource()
+          src.buffer = buffer
+          src.loop = true
+          const gain = ctx.createGain()
+          gain.gain.value = 0
+          src.connect(gain)
+          gain.connect(ctx.destination)
+          src.start(0)
+          audioRef.current = { ctx, gain }
+        } catch {
+          return null
+        }
+        return audioRef.current
+      }
+
+      map.on('mousemove', 'noise', (e) => {
         const f = e.features?.[0]
         if (!f) return
-        const p = f.properties as Record<string, unknown>
-        const fmt = (k: string, unit: string) =>
-          p[k] != null ? `<div><b>${k.replace('_avg', '')}</b>: ${p[k]} ${unit}</div>` : ''
-        const html = `
-          <div style="font-family: ui-monospace, monospace; font-size: 12px;">
-            <div style="color:#0e7490; font-weight: 700; margin-bottom: 4px;">${p.name ?? p.id ?? 'Stazione'}</div>
-            ${p.type ? `<div style="color:#555;">${p.type}</div>` : ''}
-            <div style="margin-top: 6px; color: #333;">
-              ${fmt('no2_avg', 'µg/m³')}
-              ${fmt('pm10_avg', 'µg/m³')}
-              ${fmt('pm25_avg', 'µg/m³')}
-              ${fmt('ozone_avg', 'µg/m³')}
-              ${p.samples ? `<div style="color:#888; margin-top: 4px;">${p.samples} campioni</div>` : ''}
-            </div>
-          </div>
-        `
-        new maplibregl.Popup({ closeButton: true })
+        const db = Number((f.properties as { noise_db?: number }).noise_db)
+        map.getCanvas().style.cursor = 'crosshair'
+        if (!noiseTipRef.current) {
+          noiseTipRef.current = new maplibregl.Popup({
+            closeButton: false,
+            closeOnClick: false,
+            offset: 8,
+          })
+        }
+        noiseTipRef.current
           .setLngLat(e.lngLat)
-          .setHTML(html)
+          .setHTML(
+            `<div style="font:600 12px ui-monospace,monospace;color:#111;">${db} dB</div>`,
+          )
           .addTo(map)
+        const a = ensureNoiseAudio()
+        if (a) {
+          if (a.ctx.state === 'suspended') a.ctx.resume()
+          const g = Math.max(0, Math.min(1, (db - 42) / 36)) * 0.32
+          a.gain.gain.setTargetAtTime(g, a.ctx.currentTime, 0.05)
+        }
       })
-      map.on('mouseenter', 'air-stations', () => {
-        map.getCanvas().style.cursor = 'pointer'
-      })
-      map.on('mouseleave', 'air-stations', () => {
+      map.on('mouseleave', 'noise', () => {
         map.getCanvas().style.cursor = ''
+        noiseTipRef.current?.remove()
+        const a = audioRef.current
+        if (a) a.gain.gain.setTargetAtTime(0, a.ctx.currentTime, 0.1)
       })
 
       const syncBearing = () => setBearing(map.getBearing())
@@ -849,6 +1243,10 @@ export default function MapViewer({ lang }: MapViewerProps) {
     mapRef.current = map
 
     return () => {
+      noiseTipRef.current?.remove()
+      noiseTipRef.current = null
+      audioRef.current?.ctx.close().catch(() => {})
+      audioRef.current = null
       map.remove()
       mapRef.current = null
       overlayRef.current = null
@@ -856,20 +1254,19 @@ export default function MapViewer({ lang }: MapViewerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Aggiorna sole + ombre + cielo quando cambia currentTime.
+  // Aggiorna la luce MapLibre + cielo quando cambia currentTime. Gli effetti
+  // deck.gl (sole + ombre) vengono settati INSIEME ai layer nel toggle effect
+  // sotto: cosi' un singolo setProps aggiorna effetti e layer in un colpo solo
+  // (settarli separati lasciava gli edifici non ridisegnati spegnendo le ombre).
   useEffect(() => {
     currentTimeRef.current = currentTime
     const map = mapRef.current
-    const overlay = overlayRef.current
-    if (!map || !overlay) return
+    if (!map) return
     const sun = getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0])
     if (map.isStyleLoaded()) {
       map.setLight(toMapLibreLight(sun))
       map.setSky(computeSky(sun.altitudeDeg))
     }
-    overlay.setProps({
-      effects: [buildLightingEffect(currentTime.getTime())],
-    })
   }, [currentTime])
 
   // Aggiunge il source/layer del vento quando arriva la meta (one-shot).
@@ -922,6 +1319,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
     if (!map) return
     const apply = () => {
       const maplibre3d = visibility['buildings-3d'] ? 'visible' : 'none'
+      const envIds = (envimetRef.current ?? []).map((o) =>
+        envLayerId(o.key),
+      ) as LayerKey[]
       for (const id of [
         'land-use',
         'buildings-particellari',
@@ -929,6 +1329,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
         'parks',
         'private-green',
         'wind',
+        'noise',
+        ...envIds,
       ] as LayerKey[]) {
         if (map.getLayer(id)) {
           map.setLayoutProperty(
@@ -938,44 +1340,53 @@ export default function MapViewer({ lang }: MapViewerProps) {
           )
         }
       }
-      // Air stations sono due layer maplibre (cerchio + glow) sotto un solo
-      // toggle 'air-stations'.
-      const airVis = visibility['air-stations'] ? 'visible' : 'none'
-      for (const id of ['air-stations', 'air-stations-glow']) {
-        if (map.getLayer(id)) {
-          map.setLayoutProperty(id, 'visibility', airVis)
-        }
-      }
+      // (Le stazioni qualita' aria sono marker DOM, gestite a parte.)
       if (map.getLayer('osm-buildings-context')) {
         map.setLayoutProperty('osm-buildings-context', 'visibility', maplibre3d)
       }
       if (overlay) {
-        // Se 'buildings-temp' e' attivo, calcolo la temp media del
-        // giorno corrente dalla serie storica Open Data. Tutti gli
-        // edifici prendono lo stesso colore (la serie non e' spaziale
-        // -- e' city-wide). Quando avremo Envimet temp come PNG passero'
-        // al sample per pixel come per il vento.
-        let tempColorize: number | null = null
-        if (visibility['buildings-temp'] && tempRecords) {
-          const lookup = lookupTemperature(tempRecords, currentTime)
-          tempColorize =
-            lookup.exact?.avg ?? lookup.climatology?.avg ?? null
+        // Se 'buildings-temp' e' attivo, coloro ogni edificio per la sua
+        // `air_temp` (campionata da ENVI-met dalla pipeline) normalizzata sul
+        // range dell'overlay temperatura. Spaziale, non piu' city-wide:
+        // edifici dentro al dominio ENVI-met colorati giallo->rosso, gli
+        // altri grigi.
+        let tempRange: { min: number; max: number } | null = null
+        if (visibility['buildings-temp']) {
+          const tempOv = (envimetRef.current ?? []).find(
+            (o) => o.key === 'temperature',
+          )
+          tempRange = tempOv ? tempOv.range : { min: 29, max: 37 }
         }
         overlay.setProps({
+          // Effetti (sole+ombre) e layer settati INSIEME: un solo redraw,
+          // niente edifici che spariscono quando si spengono le ombre.
+          effects: [
+            buildLightingEffect(
+              currentTime.getTime(),
+              visibility['shadows'] && visibility['buildings-3d'],
+            ),
+          ],
           layers: [
             buildShadowBuildingsLayer(
-              visibility['buildings-3d'],
+              // Mostro gli edifici estrusi se e' attivo il 3D OPPURE la
+              // colorazione per temperatura (cosi' 'buildings-temp' funziona
+              // anche da solo).
+              visibility['buildings-3d'] || visibility['buildings-temp'],
               buildingsUrl,
-              tempColorize,
+              tempRange,
             ),
             ...buildTreesLayers(visibility['trees'], trees),
           ].filter(Boolean) as Layer[],
         })
+        // Cambiare `_shadow` ri-inizializza il modulo ombre di deck.gl senza
+        // ridisegnare da solo: senza questo redraw forzato gli edifici
+        // sparivano (frame vuoto) finche' non muovevi la mappa.
+        map.triggerRepaint()
       }
     }
     if (map.isStyleLoaded()) apply()
     else map.once('idle', apply)
-  }, [visibility, trees, buildingsUrl, tempRecords, currentTime])
+  }, [visibility, trees, buildingsUrl, tempRecords, currentTime, envimetOverlays])
 
   // Basemap switcher: setStyle distrugge i source/layer custom, quindi dopo
   // 'style.load' ri-eseguo addCustomLayers (registrata in reapplyRef).
@@ -1025,8 +1436,23 @@ export default function MapViewer({ lang }: MapViewerProps) {
     const [minlon, minlat, maxlon, maxlat] = f.properties.bbox
     const cx = (minlon + maxlon) / 2
     const cy = (minlat + maxlat) / 2
-    map.flyTo({ center: [cx, cy], zoom: 15, duration: 1500 })
+    map.flyTo({ center: [cx, cy], zoom: 15, bearing: 0, duration: 1500 })
     setSelectedQuartiere(f.properties.cod_quar)
+  }
+
+  const jumpToCity = () => {
+    const map = mapRef.current
+    if (!map) return
+    // Centro storico (AOI_CENTER) con zoom 14: vista interna alla citta',
+    // non l'inquadratura larga di tutto il comune.
+    map.flyTo({
+      center: AOI_CENTER,
+      zoom: 14,
+      pitch: 55,
+      bearing: 0,
+      duration: 1400,
+    })
+    setSelectedQuartiere(null)
   }
 
   // 0 = pieno giorno, 1 = notte profonda. Usato per modulare l'overlay
@@ -1250,15 +1676,16 @@ export default function MapViewer({ lang }: MapViewerProps) {
         </div>
       </button>
 
-      {/* Toggle pannello Zone sotto la bussola. Stesso pattern del
-          toggle Layer: chevron ▸ che ruota di 90° (transition-transform)
-          quando il pannello e' aperto. */}
+      {/* Toggle pannello Zone, a fianco (destra) della barra di ricerca. Il
+          `left` e' calcolato dal bordo destro della search bar centrata
+          (meta' larghezza = min(210px,40vw)) + un gap. */}
       {quartieri && (
         <button
           type="button"
           onClick={() => setZonePanelOpen((v) => !v)}
           title={zonePanelOpen ? t('hideZones', lang) : t('showZones', lang)}
-          className="absolute top-20 sm:top-24 right-2 sm:right-4 z-20 px-2.5 py-1.5 rounded bg-gray-900/85 border border-cyan-400/30 backdrop-blur-sm shadow-xl text-cyan-300 hover:text-cyan-100 hover:border-cyan-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
+          style={{ left: 'calc(50% + min(210px, 40vw) + 0.5rem)' }}
+          className="absolute top-4 z-20 px-2.5 py-2 rounded bg-gray-900/90 border border-cyan-400/30 backdrop-blur-sm shadow-xl text-cyan-300 hover:text-cyan-100 hover:border-cyan-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
           aria-label="Toggle zone panel"
         >
           <span
@@ -1273,11 +1700,21 @@ export default function MapViewer({ lang }: MapViewerProps) {
         </button>
       )}
 
-      {/* Pannello Zone (collassabile). Posizionato a destra sotto il
-          toggle. */}
+      {/* Pannello Zone (collassabile), sotto il toggle accanto alla search. */}
       {quartieri && zonePanelOpen && (
-        <div className="absolute top-32 sm:top-36 right-2 sm:right-4 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl max-w-[60vw]">
+        <div
+          style={{ left: 'calc(50% + min(210px, 40vw) + 0.5rem)' }}
+          className="absolute top-16 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl max-w-[60vw] sm:max-w-[200px]"
+        >
           <div className="flex flex-col gap-1">
+            {/* Voce "Bologna": inquadra l'intera citta' (unione dei quartieri). */}
+            <button
+              onClick={jumpToCity}
+              className="text-left text-xs font-mono px-2 py-1 rounded transition-colors truncate text-cyan-300 font-bold hover:text-cyan-100 hover:bg-cyan-400/10 border-b border-cyan-400/20 mb-0.5"
+              title="Bologna (intera città)"
+            >
+              ▣ Bologna
+            </button>
             {quartieri.map((f) => (
               <button
                 key={f.properties.cod_quar}
@@ -1346,13 +1783,21 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 {!isCollapsed && (
                   <div className="flex flex-col gap-1.5 pl-4 pt-1 pb-1">
                     {items.map((l) => {
-                      const disabled = l.id === 'wind' && !windOverlay
+                      const isEnv = l.id.startsWith('env-')
+                      const disabled =
+                        (l.id === 'wind' && !windOverlay) ||
+                        (isEnv && !envimetOverlays) ||
+                        (l.id === 'air-stations' && !airStations) ||
+                        (l.id === 'shadows' && !visibility['buildings-3d'])
+                      const label = l.rawLabel ?? (l.labelKey ? t(l.labelKey, lang) : l.id)
                       return (
                         <label
                           key={l.id}
                           title={
                             disabled
-                              ? 'Lancia scripts/build_wind_overlay.sh per generare l’overlay'
+                              ? isEnv
+                                ? 'Lancia scripts/build_envimet_overlays.py per generare gli overlay'
+                                : 'Lancia scripts/build_wind_overlay.sh per generare l’overlay'
                               : undefined
                           }
                           className={`flex items-center gap-2 text-sm transition-colors ${
@@ -1373,7 +1818,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                             }
                             className="accent-cyan-400 cursor-pointer disabled:cursor-not-allowed"
                           />
-                          <span>{t(l.labelKey, lang)}</span>
+                          <span>{label}</span>
                         </label>
                       )
                     })}
@@ -1419,18 +1864,99 @@ export default function MapViewer({ lang }: MapViewerProps) {
         lang={lang}
       />
 
-      {probe && (
-        <InfoPanel
-          lat={probe.lat}
-          lon={probe.lon}
-          date={currentTime}
-          temp={tempLookup}
-          loading={!tempRecords}
-          windSpeed={probe.windSpeed}
-          lang={lang}
-          onClose={() => setProbe(null)}
-        />
-      )}
+      {/* Colonna in alto a destra: prima le info del punto cliccato, poi la
+          legenda (overlay microclima + scala temperatura edifici) SOTTO. */}
+      {(() => {
+        const activeEnv = (envimetOverlays ?? []).filter(
+          (o) => visibility[envLayerId(o.key) as LayerKey],
+        )
+        const tempOv = (envimetOverlays ?? []).find((o) => o.key === 'temperature')
+        const showBuildingTemp = visibility['buildings-temp']
+        const showNoise = visibility['noise']
+        const showLegend = activeEnv.length > 0 || showBuildingTemp || showNoise
+        if (!probe && !showLegend) return null
+        const NOISE_GRAD = '#22c55e, #84cc16, #eab308, #f97316, #ef4444'
+        const gradient = (stops: { color: string }[]) =>
+          `linear-gradient(to right, ${stops.map((s) => s.color).join(', ')})`
+        return (
+          <div className="absolute top-20 right-2 sm:right-4 z-10 flex flex-col gap-2 w-[min(260px,calc(100vw-1rem))] max-h-[calc(100vh-7rem)] overflow-y-auto">
+            {probe && (
+              <InfoPanel
+                lat={probe.lat}
+                lon={probe.lon}
+                date={currentTime}
+                temp={tempLookup}
+                loading={!tempRecords}
+                windSpeed={pointWind}
+                envSamples={pointEnv}
+                lang={lang}
+                onClose={() => setProbe(null)}
+              />
+            )}
+            {showLegend && (
+              <div className="bg-gray-900/85 border border-cyan-400/30 rounded p-2 backdrop-blur-sm shadow-xl">
+                <div className="text-cyan-400 text-[10px] font-mono uppercase tracking-widest mb-1.5 px-0.5">
+                  {t('legend', lang)}
+                </div>
+                <div className="flex flex-col gap-2">
+                  {showBuildingTemp && tempOv && (
+                    <div>
+                      <div className="text-gray-200 text-[11px] font-mono mb-0.5">
+                        {lang === 'it' ? 'Edifici · temperatura' : 'Buildings · temperature'} ({tempOv.unit})
+                      </div>
+                      <div
+                        className="h-2 rounded"
+                        style={{ background: gradient(tempOv.legend) }}
+                      />
+                      <div className="flex justify-between text-gray-400 text-[10px] font-mono mt-0.5">
+                        <span>{tempOv.range.min}</span>
+                        <span>{tempOv.range.max}</span>
+                      </div>
+                      <div className="flex items-center gap-1 text-gray-500 text-[10px] font-mono mt-0.5">
+                        <span
+                          className="inline-block w-2.5 h-2.5 rounded-sm"
+                          style={{ background: 'rgb(120,124,130)' }}
+                        />
+                        {lang === 'it' ? 'fuori dominio ENVI-met' : 'outside ENVI-met domain'}
+                      </div>
+                    </div>
+                  )}
+                  {showNoise && (
+                    <div>
+                      <div className="text-gray-200 text-[11px] font-mono mb-0.5">
+                        {lang === 'it' ? 'Rumore (stima)' : 'Noise (est.)'} (dB)
+                      </div>
+                      <div
+                        className="h-2 rounded"
+                        style={{ background: `linear-gradient(to right, ${NOISE_GRAD})` }}
+                      />
+                      <div className="flex justify-between text-gray-400 text-[10px] font-mono mt-0.5">
+                        <span>50</span>
+                        <span>78</span>
+                      </div>
+                    </div>
+                  )}
+                  {activeEnv.map((o) => (
+                    <div key={o.key}>
+                      <div className="text-gray-200 text-[11px] font-mono mb-0.5">
+                        {o.label} ({o.unit})
+                      </div>
+                      <div
+                        className="h-2 rounded"
+                        style={{ background: gradient(o.legend) }}
+                      />
+                      <div className="flex justify-between text-gray-400 text-[10px] font-mono mt-0.5">
+                        <span>{o.range.min}</span>
+                        <span>{o.range.max}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
     </div>
   )
 }

@@ -1,0 +1,9 @@
+1:"$Sreact.fragment"
+2:I[47257,["/UrbanScope3D/_next/static/chunks/04eklj-7j4aqp.js","/UrbanScope3D/_next/static/chunks/0sh.6aqimy6c9.js"],"ClientPageRoot"]
+3:I[66893,["/UrbanScope3D/_next/static/chunks/04eklj-7j4aqp.js","/UrbanScope3D/_next/static/chunks/0sh.6aqimy6c9.js","/UrbanScope3D/_next/static/chunks/17.dqzn3hyeop.js"],"default"]
+6:I[97367,["/UrbanScope3D/_next/static/chunks/04eklj-7j4aqp.js","/UrbanScope3D/_next/static/chunks/0sh.6aqimy6c9.js"],"OutletBoundary"]
+7:"$Sreact.suspense"
+0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","script","script-0",{"src":"/UrbanScope3D/_next/static/chunks/17.dqzn3hyeop.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"b9i4_wECj783dIyEu-jGU"}
+4:{}
+5:"$0:rsc:props:children:0:props:serverProvidedParams:params"
+8:null
