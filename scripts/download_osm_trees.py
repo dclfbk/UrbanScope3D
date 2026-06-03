@@ -80,14 +80,24 @@ def fetch(query: str) -> dict:
     raise SystemExit(f"[OSM-TREES] nessun endpoint Overpass ha risposto: {last_err}")
 
 
-# Tag OSM utili da conservare nel GeoJSON (il viewer li mostra nel popup
-# info dell'albero). Tenuti a whitelist per non gonfiare il file.
+# Tag OSM utili da conservare nel GeoJSON (il viewer li usa nel popup info e
+# per scegliere la mesh 3D / l'altezza dell'albero). Whitelist per non gonfiare
+# il file: si escludono i :wikidata, source, ref, ecc. `genus:it`/`species:it`
+# sono i nomi comuni italiani (molto popolati su Bologna); `leaf_type` decide la
+# forma della chioma (latifoglia/conifera); `height` (raro) la scala verticale.
 TREE_TAG_KEYS = (
     "genus",
+    "genus:it",
     "species",
+    "species:it",
+    "taxon",
     "leaf_type",
+    "leaf_cycle",
     "height",
+    "diameter_crown",
     "circumference",
+    "denotation",
+    "name",
 )
 
 

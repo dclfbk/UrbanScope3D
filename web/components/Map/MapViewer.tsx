@@ -10,7 +10,12 @@ import {
   LightingEffect,
   type Layer,
 } from '@deck.gl/core'
-import { GeoJsonLayer, ColumnLayer } from '@deck.gl/layers'
+import {
+  GeoJsonLayer,
+  ColumnLayer,
+  ScatterplotLayer,
+  TextLayer,
+} from '@deck.gl/layers'
 import { SimpleMeshLayer } from '@deck.gl/mesh-layers'
 import { Geometry } from '@luma.gl/engine'
 import { getSunPosition, toMapLibreLight } from '@/lib/sun'
@@ -34,6 +39,7 @@ import {
   BOLOGNA_SANGIOVESE,
   toCss,
   withAlpha,
+  type RGB,
 } from '@/lib/palette'
 
 // Chiavi degli overlay microclima ENVI-met (devono combaciare con i `key`
@@ -243,11 +249,10 @@ type WindOverlay = {
 const AOI_CENTER: [number, number] = [11.343720439501553, 44.49989258707834]
 const DEFAULT_BUILDING_HEIGHT = 15
 
-// Albero stilizzato: tronco cilindrico + chioma a CONI sovrapposti (abete
-// low-poly), generata proceduralmente (nessun asset esterno copiato).
-const TRUNK_HEIGHT = 3.2
+// Albero stilizzato: tronco cilindrico + chioma. Due forme di chioma generate
+// proceduralmente (nessun asset esterno): coni sovrapposti per le conifere,
+// sfera per le latifoglie. La forma si sceglie dal tag OSM leaf_type.
 const TRUNK_RADIUS = 0.32
-const CANOPY_RADIUS = 2.6
 
 // Mesh di un alberello a 3 tier conici, asse su +Z (base z=0, apice z~1.3).
 // Plain mesh {positions, normals, indices} cosi' deck.gl SimpleMeshLayer lo
@@ -297,12 +302,55 @@ function makeFirMesh() {
     indices: { value: new Uint16Array(indices), size: 1 },
   })
 }
-const TREE_MESH = makeFirMesh()
+// Mesh sferica low-poly (chioma latifoglia): UV sphere raggio 0.5 traslata
+// in z cosi' si estende da z=0 (base, appoggiata sulla cima del tronco) a z=1.
+function makeBlobMesh() {
+  const latBands = 6
+  const lonBands = 8
+  const positions: number[] = []
+  const normals: number[] = []
+  const indices: number[] = []
+  for (let la = 0; la <= latBands; la++) {
+    const theta = (la / latBands) * Math.PI
+    const st = Math.sin(theta)
+    const ct = Math.cos(theta)
+    for (let lo = 0; lo <= lonBands; lo++) {
+      const phi = (lo / lonBands) * Math.PI * 2
+      const nx = st * Math.cos(phi)
+      const ny = st * Math.sin(phi)
+      const nz = ct
+      positions.push(nx * 0.5, ny * 0.5, nz * 0.5 + 0.5)
+      normals.push(nx, ny, nz)
+    }
+  }
+  const ring = lonBands + 1
+  for (let la = 0; la < latBands; la++) {
+    for (let lo = 0; lo < lonBands; lo++) {
+      const a = la * ring + lo
+      const b = a + ring
+      indices.push(a, b, a + 1, b, b + 1, a + 1)
+    }
+  }
+  return new Geometry({
+    topology: 'triangle-list',
+    attributes: {
+      POSITION: { value: new Float32Array(positions), size: 3 },
+      NORMAL: { value: new Float32Array(normals), size: 3 },
+    },
+    indices: { value: new Uint16Array(indices), size: 1 },
+  })
+}
 
-// Proprietà grezze dell'albero dal GeoJSON sorgente. Oggi quasi sempre vuote
-// (DBTR: {} ; OSM scaricato con `out skel;` -> solo `id`): il popup mostra
-// allora la sola posizione. Se la sorgente viene arricchita
-// (specie/genere/altezza/circonferenza) quei campi compaiono da soli.
+// Conifera = coni (z 0..~1.32), latifoglia = sfera (z 0..1). Gli ZMAX servono
+// a convertire un'altezza in metri nello scale verticale del SimpleMeshLayer.
+const CONIFER_MESH = makeFirMesh()
+const BROADLEAF_MESH = makeBlobMesh()
+const CONIFER_ZMAX = 1.32
+const BROADLEAF_ZMAX = 1.0
+
+// Proprietà grezze dell'albero dal GeoJSON sorgente (tag OSM: genus, species,
+// genus:it, leaf_type, leaf_cycle, height, ...). Usate dal popup info e per
+// scegliere forma/altezza della chioma. Possono mancare: il popup degrada.
 type TreeProps = Record<string, string | number | null | undefined>
 type TreePoint = {
   position: [number, number]
@@ -317,45 +365,78 @@ function hashSeed(lon: number, lat: number): number {
   return x - Math.floor(x)
 }
 
-function buildLightingEffect(
-  timestamp: number,
-  shadowsOn: boolean,
-): LightingEffect {
-  // Di notte (sole sotto l'orizzonte) spengo sole + ombre: altrimenti
-  // deck.gl proietta ombre lunghissime/assurde da una sorgente che e'
-  // sotto il terreno. Lascio solo un ambient piu' alto per leggibilita'.
-  // `shadowsOn` e' il toggle "Ombre" (richiede "Edifici 3D").
-  const sunPos = getSunPosition(
-    new Date(timestamp),
-    AOI_CENTER[1],
-    AOI_CENTER[0],
-  )
+type TreeKind = 'conifer' | 'broadleaf'
+
+// Forma della chioma dal tag OSM leaf_type: needleleaved -> conifera (coni),
+// tutto il resto (broadleaved/leafless/sconosciuto) -> latifoglia (sfera). A
+// Bologna la stragrande maggioranza e' broadleaved.
+function treeKind(d: TreePoint): TreeKind {
+  return String(d.props.leaf_type ?? '').toLowerCase() === 'needleleaved'
+    ? 'conifer'
+    : 'broadleaf'
+}
+
+// Altezza in metri: usa il tag OSM `height` se valido (raro, ~58 alberi a
+// Bologna), altrimenti una stima procedurale 6..13 m variata per seed. Gestisce
+// valori tipo "20", "9 m", "12.5".
+function parseHeightM(v: TreeProps[string]): number | null {
+  if (v == null) return null
+  const m = String(v).match(/[\d.]+/)
+  if (!m) return null
+  const n = parseFloat(m[0])
+  return Number.isFinite(n) && n >= 2 && n <= 120 ? n : null
+}
+function treeHeightM(d: TreePoint): number {
+  return parseHeightM(d.props.height) ?? 6 + d.seed * 7
+}
+function trunkHeightOf(d: TreePoint): number {
+  return Math.max(1.5, treeHeightM(d) * 0.28)
+}
+
+// Colore dell'ombra proiettata (RGBA 0..1). Alpha 0 = ombra invisibile.
+const SHADOW_ON: [number, number, number, number] = [0, 0, 0, 0.5]
+const SHADOW_OFF: [number, number, number, number] = [0, 0, 0, 0]
+
+// Sole + ambient per un dato istante. `_shadow` resta SEMPRE true (costante):
+// cambiarlo a runtime ricostruisce il modulo ombre e lascia il GeoJsonLayer
+// estruso con uno shader in cache privo del binding shadow_uShadowMapN ->
+// errore luma.gl + edifici/tetti spariti (di giorno togliendo le ombre, di
+// notte al tramonto). L'on/off dell'ombra si fa SOLO via shadowColor (alpha),
+// mutato sull'effetto persistente (vedi nota in applyLighting). Di notte: sole
+// a intensita' 0 e ambient alto cosi' gli edifici restano ben visibili.
+function sunAmbientFor(timestamp: number): {
+  sun: SunLight
+  ambient: AmbientLight
+} {
+  const sunPos = getSunPosition(new Date(timestamp), AOI_CENTER[1], AOI_CENTER[0])
   const isDay = sunPos.altitudeDeg > 0
-  const shadowsActive = isDay && shadowsOn
-  // `_shadow` segue il toggle "Ombre" (shadowsActive = giorno && ombreOn):
-  // ombre OFF => nessun shadow pass, quindi NESSUNA ombra proiettata. Azzerare
-  // solo `shadowColor` (alpha 0) non bastava: su alcune GPU restava comunque
-  // un alone d'ombra, ed era questo il motivo per cui "Ombre" deselezionato
-  // lasciava lo stesso le ombre. Cambiare `_shadow` a runtime ricostruisce il
-  // modulo ombre di deck.gl senza ridisegnare da solo (frame vuoto, edifici
-  // spariti finche' non muovi la mappa): il redraw forzato e' il
-  // `map.triggerRepaint()` chiamato subito dopo `overlay.setProps(...)` nel
-  // toggle effect.
   const sun = new SunLight({
     timestamp,
     color: [255, 255, 255],
     intensity: isDay ? 1.5 : 0,
-    _shadow: shadowsActive,
+    _shadow: true,
   })
   const ambient = new AmbientLight({
     color: [255, 255, 255],
-    intensity: isDay ? 1.0 : 0.6,
+    intensity: isDay ? 1.0 : 1.15,
   })
-  const effect = new LightingEffect({ sun, ambient })
-  ;(effect as unknown as { shadowColor: number[] }).shadowColor = shadowsActive
-    ? [0, 0, 0, 0.5]
-    : [0, 0, 0, 0]
-  return effect
+  return { sun, ambient }
+}
+
+// Aggiorna l'effetto luce PERSISTENTE (deck.gl, ricevendo un nuovo effect con
+// lo stesso id 'lighting-effect', terrebbe quello vecchio applicandone solo i
+// `props` -> shadowColor verrebbe ignorato). Per questo qui si MUTA sempre la
+// stessa istanza: setProps aggiorna sole/ambient, e shadowColor (letto live a
+// ogni frame da getShaderModuleProps) accende/spegne davvero l'ombra.
+function applyLighting(
+  effect: LightingEffect,
+  timestamp: number,
+  castShadows: boolean,
+): void {
+  effect.setProps(sunAmbientFor(timestamp))
+  ;(effect as unknown as { shadowColor: number[] }).shadowColor = castShadows
+    ? SHADOW_ON
+    : SHADOW_OFF
 }
 
 type QuartiereFeature = {
@@ -407,6 +488,71 @@ function buildSelectedQuartiereLayer(
     lineWidthMinPixels: 1.5,
     pickable: false,
     material: false,
+  })
+}
+
+// Colore del brand UrbanScope3D (text-cyan-400 = #22d3ee).
+const BRAND_CYAN: RGB = [34, 211, 238]
+
+// Bordo del quartiere che si colora al cambio quartiere e poi svanisce in fade.
+// Colore brand ciano, sopra ai palazzi (depthCompare 'always'). `fading` porta
+// l'alpha a 0 e una transizione deck.gl di 1s lo dissolve dolcemente.
+function buildQuartiereFlashLayer(
+  quartieri: QuartiereFeature[] | null,
+  codQuar: number | null,
+  fading: boolean,
+): GeoJsonLayer | null {
+  if (!quartieri || codQuar == null) return null
+  const feat = quartieri.find((f) => f.properties.cod_quar === codQuar)
+  if (!feat) return null
+  return new GeoJsonLayer({
+    id: 'quartiere-flash',
+    data: { type: 'FeatureCollection', features: [feat] },
+    stroked: true,
+    filled: true,
+    extruded: false,
+    getFillColor: withAlpha(BRAND_CYAN, fading ? 0 : 50),
+    getLineColor: withAlpha(BRAND_CYAN, fading ? 0 : 255),
+    lineWidthUnits: 'pixels',
+    getLineWidth: 4,
+    lineWidthMinPixels: 4,
+    pickable: false,
+    parameters: { depthCompare: 'always' },
+    updateTriggers: { getFillColor: fading, getLineColor: fading },
+    transitions: { getFillColor: 1000, getLineColor: 1000 },
+  })
+}
+
+// Etichette bianche col nome dei 6 quartieri, disegnate SOPRA i palazzi
+// (depthCompare 'always') con bordino nero per leggibilita' su ogni basemap.
+function buildQuartiereLabelsLayer(
+  quartieri: QuartiereFeature[] | null,
+): TextLayer | null {
+  if (!quartieri || quartieri.length === 0) return null
+  const data = quartieri.map((f) => {
+    const [minlon, minlat, maxlon, maxlat] = f.properties.bbox
+    return {
+      position: [(minlon + maxlon) / 2, (minlat + maxlat) / 2] as [number, number],
+      text: f.properties.quartiere,
+    }
+  })
+  return new TextLayer<{ position: [number, number]; text: string }>({
+    id: 'quartiere-labels',
+    data,
+    getPosition: (d) => d.position,
+    getText: (d) => d.text,
+    getSize: 15,
+    sizeUnits: 'pixels',
+    getColor: [255, 255, 255, 255],
+    outlineColor: [0, 0, 0, 220],
+    outlineWidth: 3,
+    fontSettings: { sdf: true },
+    fontWeight: 700,
+    getTextAnchor: 'middle',
+    getAlignmentBaseline: 'center',
+    billboard: true,
+    pickable: false,
+    parameters: { depthCompare: 'always' },
   })
 }
 
@@ -485,6 +631,60 @@ function buildShadowBuildingsLayer(
   })
 }
 
+// Tetti "alla bolognese": rosso mattone dei coppi, distinti dalle facciate
+// ocra. deck.gl colora top+lati di un edificio estruso con UN solo colore,
+// quindi per avere il tetto di colore diverso si disegna un layer a parte: le
+// stesse impronte ELEVATE a z = altezza (+0.3 m per stare appena sopra la cima
+// dell'estrusione ed evitare z-fighting), come poligoni piatti.
+type RoofFC = {
+  features: {
+    properties?: { height?: number } | null
+    geometry: {
+      type: string
+      coordinates: number[][][] | number[][][][]
+    }
+  }[]
+}
+function elevateRoofs(fc: RoofFC): RoofFC {
+  for (const f of fc.features) {
+    const h = f.properties?.height
+    const z =
+      (typeof h === 'number' && h > 0 ? h : DEFAULT_BUILDING_HEIGHT) + 0.3
+    const g = f.geometry
+    const lift = (ring: number[][]) => ring.map((c) => [c[0], c[1], z])
+    if (g.type === 'Polygon') {
+      g.coordinates = (g.coordinates as number[][][]).map(lift)
+    } else if (g.type === 'MultiPolygon') {
+      g.coordinates = (g.coordinates as number[][][][]).map((poly) =>
+        poly.map(lift),
+      )
+    }
+  }
+  return fc
+}
+function buildRoofLayer(visible: boolean, dataUrl: string): GeoJsonLayer | null {
+  if (!visible) return null
+  return new GeoJsonLayer({
+    id: 'buildings-roof',
+    data: dataUrl,
+    // @ts-expect-error dataTransform restituisce la nostra FC elevata
+    dataTransform: (d: unknown) => elevateRoofs(d as RoofFC),
+    stroked: false,
+    filled: true,
+    extruded: false,
+    getFillColor: withAlpha(BOLOGNA_RED, 255),
+    pickable: false,
+    // Tetti piatti: niente ombra propria -> fuori dallo shadow pass.
+    shadowEnabled: false,
+    material: {
+      ambient: 0.45,
+      diffuse: 0.85,
+      shininess: 10,
+      specularColor: [60, 30, 25],
+    },
+  })
+}
+
 function buildTreesLayers(
   visible: boolean,
   data: TreePoint[] | null,
@@ -493,12 +693,18 @@ function buildTreesLayers(
   const trunk = new ColumnLayer<TreePoint>({
     id: 'trees-trunk',
     data,
-    diskResolution: 10,
+    diskResolution: 6,
     radius: TRUNK_RADIUS,
     extruded: true,
     pickable: true,
+    // Gli alberi NON entrano nello shadow pass: con 100k+ istanze raddoppiare
+    // il rendering nella shadow map li rendeva lentissimi (e le ombre degli
+    // alberi sarebbero comunque caotiche). Solo gli edifici proiettano ombre.
+    // shadowEnabled e' una prop runtime letta da ShadowPass, non nei tipi TS.
+    // @ts-expect-error deck.gl runtime prop assente dai types
+    shadowEnabled: false,
     getPosition: (d) => d.position,
-    getElevation: (d) => TRUNK_HEIGHT * (0.85 + d.seed * 0.4),
+    getElevation: trunkHeightOf,
     getFillColor: [82, 58, 38, 255],
     material: {
       ambient: 0.45,
@@ -507,16 +713,18 @@ function buildTreesLayers(
       specularColor: [40, 30, 20],
     },
   })
-  // Chioma a DUE lobi (sfere) per evitare la "palla su stecco": un lobo
-  // principale ovale che scende a coprire la cima del tronco + un lobo
-  // secondario piu' piccolo sfalsato. Tutto con SphereGeometry (simmetrica,
-  // nessun problema di orientamento del mesh).
-  const trunkTopOf = (d: TreePoint) => TRUNK_HEIGHT * (0.85 + d.seed * 0.4)
-  const canopyColor = (d: TreePoint): [number, number, number, number] => {
-    const g = 110 + Math.round(d.seed * 50)
-    const r = 50 + Math.round(d.seed * 30)
-    const b = 55 + Math.round((1 - d.seed) * 35)
-    return [r, g, b, 245]
+  // Colore chioma: latifoglie verde brillante, conifere verde scuro/bluastro;
+  // variazione per seed per non avere una foresta monocroma.
+  const canopyColor = (
+    d: TreePoint,
+    kind: TreeKind,
+  ): [number, number, number, number] => {
+    if (kind === 'conifer') {
+      const g = 80 + Math.round(d.seed * 40)
+      return [38 + Math.round(d.seed * 18), g, 56 + Math.round((1 - d.seed) * 26), 245]
+    }
+    const g = 120 + Math.round(d.seed * 55)
+    return [55 + Math.round(d.seed * 30), g, 48 + Math.round((1 - d.seed) * 30), 245]
   }
   const canopyMaterial = {
     ambient: 0.35,
@@ -524,24 +732,80 @@ function buildTreesLayers(
     shininess: 6,
     specularColor: [50, 80, 50] as [number, number, number],
   }
-  // Chioma: abete low-poly a coni (TREE_MESH), base sulla cima del tronco.
-  // getScale [s, s, sz]: s = raggio chioma, sz = altezza (il mesh va da z=0
-  // a ~1.3, quindi l'altezza reale e' ~1.3*sz).
-  const canopy = new SimpleMeshLayer<TreePoint>({
-    id: 'trees-canopy',
-    data,
-    mesh: TREE_MESH,
-    pickable: true,
-    getPosition: (d) => d.position,
-    getTranslation: (d) => [0, 0, trunkTopOf(d) - 0.3],
-    getScale: (d) => {
-      const s = CANOPY_RADIUS * (0.8 + d.seed * 0.45)
-      return [s, s, s * (1.9 + d.seed * 0.7)]
-    },
-    getColor: canopyColor,
-    material: canopyMaterial,
+  // Una chioma per FORMA (leaf_type): SimpleMeshLayer accetta un solo mesh, per
+  // questo si separano conifere e latifoglie in due layer, ciascuno col proprio
+  // mesh e il sottoinsieme di alberi. getScale [s, s, sz]: s = raggio chioma
+  // (scala col diametro tipico), sz = altezza chioma in metri / ZMAX del mesh.
+  const makeCanopy = (
+    id: string,
+    subset: TreePoint[],
+    mesh: Geometry,
+    zmax: number,
+    kind: TreeKind,
+    radiusK: number,
+    radMin: number,
+    radMax: number,
+  ) =>
+    new SimpleMeshLayer<TreePoint>({
+      id,
+      data: subset,
+      mesh,
+      pickable: true,
+      // @ts-expect-error deck.gl runtime prop assente dai types (vedi trunk)
+      shadowEnabled: false,
+      getPosition: (d) => d.position,
+      getTranslation: (d) => [0, 0, trunkHeightOf(d) * 0.92],
+      getScale: (d) => {
+        const H = treeHeightM(d)
+        const canopyH = Math.max(1.5, H - trunkHeightOf(d) * 0.92)
+        const s =
+          Math.max(radMin, Math.min(radMax, H * radiusK)) * (0.85 + d.seed * 0.3)
+        return [s, s, canopyH / zmax]
+      },
+      getColor: (d) => canopyColor(d, kind),
+      material: canopyMaterial,
+    })
+  const conifers = data.filter((d) => treeKind(d) === 'conifer')
+  const broadleaves = data.filter((d) => treeKind(d) === 'broadleaf')
+  const layers: Layer[] = [trunk]
+  if (conifers.length) {
+    layers.push(
+      makeCanopy('trees-canopy-conifer', conifers, CONIFER_MESH, CONIFER_ZMAX, 'conifer', 0.16, 1.0, 3.5),
+    )
+  }
+  if (broadleaves.length) {
+    layers.push(
+      makeCanopy('trees-canopy-broadleaf', broadleaves, BROADLEAF_MESH, BROADLEAF_ZMAX, 'broadleaf', 0.26, 1.3, 5.5),
+    )
+  }
+  return layers
+}
+
+// Cerchio di evidenziazione attorno all'albero selezionato: un anello ciano
+// (colore brand) sul terreno alla base dell'albero. depthTest off cosi' resta
+// sempre visibile, non occluso dalla chioma o dagli edifici.
+function buildSelectedTreeLayer(
+  sel: { lon: number; lat: number } | null,
+): Layer | null {
+  if (!sel) return null
+  return new ScatterplotLayer<{ lon: number; lat: number }>({
+    id: 'tree-selected-ring',
+    data: [sel],
+    getPosition: (d) => [d.lon, d.lat],
+    stroked: true,
+    filled: false,
+    getLineColor: [34, 211, 238, 255],
+    getRadius: 3.5,
+    radiusUnits: 'meters',
+    radiusMinPixels: 13,
+    lineWidthUnits: 'pixels',
+    getLineWidth: 3,
+    lineWidthMinPixels: 3,
+    pickable: false,
+    // depthCompare 'always' = disabilita il depth test -> l'anello e' sempre
+    // visibile, non occluso da chioma/edifici (in luma.gl v9 non c'e' depthTest).
+    parameters: { depthCompare: 'always' },
   })
-  return [trunk, canopy]
 }
 
 // Segnaposto del punto cliccato: icona INFO (cerchio rosso Bologna con bordo
@@ -564,46 +828,111 @@ function makeProbeInfoElement(): HTMLDivElement {
   return el
 }
 
-// Etichette IT/EN per gli attributi albero che POTREBBERO comparire se la
-// sorgente viene arricchita (OSM `out tags;`, o un DBTR con specie). Se nel
-// dataset attuale non ci sono, il popup mostra solo la posizione.
-const TREE_FIELD_LABELS: Record<string, { it: string; en: string }> = {
-  genus: { it: 'Genere', en: 'Genus' },
-  species: { it: 'Specie', en: 'Species' },
-  leaf_type: { it: 'Tipo foglia', en: 'Leaf type' },
-  height: { it: 'Altezza', en: 'Height' },
-  circumference: { it: 'Circonferenza', en: 'Circumference' },
+// Traduzioni dei valori enum OSM (mostrati nel popup in forma leggibile).
+const LEAF_TYPE_VAL: Record<string, { it: string; en: string }> = {
+  broadleaved: { it: 'Latifoglia', en: 'Broadleaved' },
+  needleleaved: { it: 'Aghifoglia', en: 'Needleleaved' },
+  leafless: { it: 'Spoglio', en: 'Leafless' },
+}
+const LEAF_CYCLE_VAL: Record<string, { it: string; en: string }> = {
+  deciduous: { it: 'caduca', en: 'deciduous' },
+  evergreen: { it: 'sempreverde', en: 'evergreen' },
+  semi_evergreen: { it: 'semi-sempreverde', en: 'semi-evergreen' },
+}
+const DENOTATION_VAL: Record<string, { it: string; en: string }> = {
+  avenue: { it: 'filare/viale', en: 'avenue' },
+  park: { it: 'parco', en: 'park' },
+  garden: { it: 'giardino', en: 'garden' },
+  urban: { it: 'urbano', en: 'urban' },
+  agricultural: { it: 'agricolo', en: 'agricultural' },
+  landmark: { it: 'punto di riferimento', en: 'landmark' },
+  natural_monument: { it: 'monumento naturale', en: 'natural monument' },
 }
 
 // HTML del popup info di un albero cliccato. Stile coerente col popup delle
-// centraline qualita' aria. Mostra gli attributi noti presenti + ID + coord.
+// centraline qualita' aria. Preferisce i nomi comuni italiani (genus:it,
+// species:it) e traduce i valori enum; degrada con grazia se i campi mancano.
 function treePopupHtml(
   lat: number,
   lon: number,
   props: TreeProps,
   lang: Lang,
 ): string {
-  const title = lang === 'it' ? '🌳 Albero' : '🌳 Tree'
-  const row = (label: string, value: string | number) =>
-    `<div style="display:flex;justify-content:space-between;gap:10px;"><span>${label}</span><b>${value}</b></div>`
-  const rows: string[] = []
-  for (const [key, lab] of Object.entries(TREE_FIELD_LABELS)) {
-    const v = props[key]
-    if (v != null && v !== '') rows.push(row(lang === 'it' ? lab.it : lab.en, v))
+  const it = lang === 'it'
+  const str = (k: string) => {
+    const v = props[k]
+    return v == null || v === '' ? null : String(v)
   }
-  if (props.id != null) rows.push(row('ID', props.id))
+  const trans = (
+    map: Record<string, { it: string; en: string }>,
+    raw: string | null,
+  ) => (raw ? (map[raw.toLowerCase()]?.[lang] ?? raw) : null)
+
+  const row = (label: string, value: string) =>
+    `<div style="display:flex;justify-content:space-between;gap:12px;"><span style="color:#666;">${label}</span><b style="text-align:right;">${value}</b></div>`
+  const rows: string[] = []
+
+  // Specie: nome comune IT + binomio latino in corsivo (quello che c'e').
+  const speciesIt = str('species:it')
+  const speciesLat = str('species') ?? str('taxon')
+  if (speciesIt || speciesLat) {
+    const main = speciesIt ?? speciesLat!
+    const sub =
+      speciesIt && speciesLat ? ` <i style="color:#888;">(${speciesLat})</i>` : ''
+    rows.push(row(it ? 'Specie' : 'Species', `${main}${sub}`))
+  }
+  const genus = str('genus:it') ?? str('genus')
+  if (genus) rows.push(row(it ? 'Genere' : 'Genus', genus))
+
+  // Tipo foglia + ciclo fogliare uniti in una riga ("Latifoglia · caduca").
+  const leaf = trans(LEAF_TYPE_VAL, str('leaf_type'))
+  const cycle = trans(LEAF_CYCLE_VAL, str('leaf_cycle'))
+  const leafLine = [leaf, cycle].filter(Boolean).join(' · ')
+  if (leafLine) rows.push(row(it ? 'Foglia' : 'Leaf', leafLine))
+
+  const h = parseHeightM(props.height)
+  if (h != null) rows.push(row(it ? 'Altezza' : 'Height', `${h} m`))
+  const crown = str('diameter_crown')
+  if (crown) rows.push(row(it ? 'Ø chioma' : 'Crown Ø', /m|cm/.test(crown) ? crown : `${crown} m`))
+  const circ = str('circumference')
+  if (circ) rows.push(row(it ? 'Circonferenza' : 'Circumference', /m|cm/.test(circ) ? circ : `${circ} m`))
+  const den = trans(DENOTATION_VAL, str('denotation'))
+  if (den) rows.push(row(it ? 'Contesto' : 'Context', den))
+
   if (rows.length === 0) {
     rows.push(
-      `<div style="color:#777;">${lang === 'it' ? 'Nessun attributo nel dataset' : 'No attributes in dataset'}</div>`,
+      `<div style="color:#777;">${it ? 'Nessun attributo nel dataset' : 'No attributes in dataset'}</div>`,
     )
   }
+
+  // Titolo: nome proprio (alberi monumentali) se presente, altrimenti generico.
+  const name = str('name')
+  const title = name ? `🌳 ${name}` : it ? '🌳 Albero' : '🌳 Tree'
   return (
-    `<div style="font-family:ui-monospace,monospace;font-size:12px;color:#222;min-width:150px;">` +
+    `<div style="font-family:ui-monospace,monospace;font-size:12px;color:#222;min-width:170px;max-width:240px;">` +
     `<div style="color:#2f7d32;font-weight:700;margin-bottom:4px;">${title}</div>` +
     rows.join('') +
     `<div style="color:#999;margin-top:4px;">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>` +
     `</div>`
   )
+}
+
+// Rende bianche (con alone scuro) le etichette testuali della basemap per
+// leggerle meglio. Idempotente; va richiamata dopo ogni setStyle perche' lo
+// swap ricarica i colori originali. Sotto ai palazzi 3D (deck overlaid) le
+// label restano coperte, ma dove non lo sono risaltano.
+function whitenMapLabels(map: maplibregl.Map): void {
+  const style = map.getStyle()
+  for (const l of style?.layers ?? []) {
+    if (l.type !== 'symbol') continue
+    try {
+      map.setPaintProperty(l.id, 'text-color', '#ffffff')
+      map.setPaintProperty(l.id, 'text-halo-color', 'rgba(0,0,0,0.85)')
+      map.setPaintProperty(l.id, 'text-halo-width', 1.4)
+    } catch {
+      // layer simbolo senza testo: niente da colorare
+    }
+  }
 }
 
 type MapViewerProps = {
@@ -614,6 +943,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const overlayRef = useRef<MapboxOverlay | null>(null)
+  // Effetto luce deck.gl PERSISTENTE: creato una volta, poi sempre mutato (mai
+  // sostituito) cosi' il cambio di shadowColor viene davvero applicato.
+  const lightingRef = useRef<LightingEffect | null>(null)
+  // True dopo il primo 'idle' della mappa: solo allora popolo i layer deck.
+  // Serve a far compilare gli shader DOPO che l'effetto ombre ha registrato il
+  // suo modulo (altrimenti edifici/tetti uscivano senza il tetto finche' non si
+  // toccavano le ombre -> ricompilazione tardiva).
+  const [overlayReady, setOverlayReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const [currentTime, setCurrentTime] = useState<Date>(
     () => new Date(2026, 5, 21, 12, 0, 0),
@@ -629,6 +966,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // Evita fetch doppi del GeoJSON alberi (lazy: parte al primo toggle del
   // layer 'Alberi'). Su errore viene rimesso a false per consentire un retry.
   const treesRequestedRef = useRef(false)
+  const treesVisible = visibility['trees']
+  // Layer 3D degli alberi memoizzati su [treesVisible, trees]: NON vengono
+  // ricostruiti (ne' i 100k+ alberi rifiltrati per tipo) a ogni tick del time
+  // slider o al toggle di altri layer -> molto piu' fluido.
+  const treeLayers = useMemo(
+    () => buildTreesLayers(treesVisible, trees),
+    [treesVisible, trees],
+  )
   const [tempRecords, setTempRecords] = useState<TempRecord[] | null>(null)
   const [probe, setProbe] = useState<{ lat: number; lon: number } | null>(null)
   // Albero cliccato (picking deck.gl): mostra un popup con le sue info.
@@ -690,6 +1035,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
   const [selectedQuartiere, setSelectedQuartiere] = useState<number | null>(
     null,
   )
+  // Quartiere il cui bordo "lampeggia" per qualche secondo dopo un cambio,
+  // poi svanisce in fade (flashFading -> alpha 0 con transizione deck.gl).
+  const [flashQuartiere, setFlashQuartiere] = useState<number | null>(null)
+  const [flashFading, setFlashFading] = useState(false)
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [layerPanelOpen, setLayerPanelOpen] = useState(true)
   const [zonePanelOpen, setZonePanelOpen] = useState(false)
   // Ref aggiornato a `currentTime`: serve dentro callback registrate al
@@ -1260,30 +1611,30 @@ export default function MapViewer({ lang }: MapViewerProps) {
     map.on('load', () => {
       addCustomLayers()
       tintBackgroundIfDark(basemap)
+      whitenMapLabels(map)
       reapplyRef.current = addCustomLayers
 
+      // Effetto luce persistente: creato qui una volta, poi solo mutato.
+      const isDay0 =
+        getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0]).altitudeDeg > 0
+      const lighting = new LightingEffect(sunAmbientFor(currentTime.getTime()))
+      ;(lighting as unknown as { shadowColor: number[] }).shadowColor =
+        isDay0 && visibility['shadows'] && visibility['buildings-3d']
+          ? SHADOW_ON
+          : SHADOW_OFF
+      lightingRef.current = lighting
+
+      // Layer deck inizialmente VUOTI: vengono popolati dal toggle effect al
+      // primo 'idle' (overlayReady), cosi' compilano DOPO che l'effetto ombre
+      // ha registrato il suo modulo shader -> niente tetti mancanti.
       const overlay = new MapboxOverlay({
         interleaved: false,
-        effects: [
-          buildLightingEffect(
-            currentTime.getTime(),
-            visibility['shadows'] && visibility['buildings-3d'],
-          ),
-        ],
-        layers: [
-          buildShadowBuildingsLayer(
-            LAYERS.find((l) => l.id === 'buildings-3d')!.default,
-            buildingsUrl,
-            null,
-          ),
-          ...buildTreesLayers(
-            LAYERS.find((l) => l.id === 'trees')!.default,
-            trees,
-          ),
-        ].filter(Boolean) as Layer[],
+        effects: [lighting],
+        layers: [],
       })
       map.addControl(overlay as unknown as maplibregl.IControl)
       overlayRef.current = overlay
+      map.once('idle', () => setOverlayReady(true))
 
       const sun0 = getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0])
       map.setLight(toMapLibreLight(sun0))
@@ -1305,7 +1656,11 @@ export default function MapViewer({ lang }: MapViewerProps) {
           x: e.point.x,
           y: e.point.y,
           radius: 6,
-          layerIds: ['trees-canopy', 'trees-trunk'],
+          layerIds: [
+            'trees-canopy-broadleaf',
+            'trees-canopy-conifer',
+            'trees-trunk',
+          ],
         })
         if (picked && picked.object) {
           const tp = picked.object
@@ -1405,6 +1760,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
       noiseTipRef.current = null
       treePopupRef.current?.remove()
       treePopupRef.current = null
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
       audioRef.current?.ctx.close().catch(() => {})
       audioRef.current = null
       map.remove()
@@ -1504,7 +1861,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
       if (map.getLayer('osm-buildings-context')) {
         map.setLayoutProperty('osm-buildings-context', 'visibility', maplibre3d)
       }
-      if (overlay) {
+      if (overlay && overlayReady) {
         // Se 'buildings-temp' e' attivo, coloro ogni edificio per la sua
         // `air_temp` (campionata da ENVI-met dalla pipeline) normalizzata sul
         // range dell'overlay temperatura. Spaziale, non piu' city-wide:
@@ -1517,15 +1874,22 @@ export default function MapViewer({ lang }: MapViewerProps) {
           )
           tempRange = tempOv ? tempOv.range : { min: 29, max: 37 }
         }
+        // Luce: MUTO l'effetto persistente (mai uno nuovo, vedi applyLighting)
+        // cosi' il cambio di shadowColor viene applicato davvero. _shadow resta
+        // costante -> nessuna ricompilazione, edifici sempre presenti.
+        const isDay =
+          getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0]).altitudeDeg >
+          0
+        const castShadows =
+          isDay && visibility['shadows'] && visibility['buildings-3d']
+        if (lightingRef.current) {
+          applyLighting(lightingRef.current, currentTime.getTime(), castShadows)
+        }
         overlay.setProps({
-          // Effetti (sole+ombre) e layer settati INSIEME: un solo redraw,
-          // niente edifici che spariscono quando si spengono le ombre.
-          effects: [
-            buildLightingEffect(
-              currentTime.getTime(),
-              visibility['shadows'] && visibility['buildings-3d'],
-            ),
-          ],
+          // Stessa istanza persistente: deck fa deepEqual e non la sostituisce
+          // (le mutazioni sopra sono gia' attive); se invece il deck e' stato
+          // ricreato — es. cambio basemap — la re-installa con i valori giusti.
+          effects: lightingRef.current ? [lightingRef.current] : [],
           layers: [
             buildShadowBuildingsLayer(
               // Mostro gli edifici estrusi se e' attivo il 3D OPPURE la
@@ -1535,18 +1899,39 @@ export default function MapViewer({ lang }: MapViewerProps) {
               buildingsUrl,
               tempRange,
             ),
-            ...buildTreesLayers(visibility['trees'], trees),
+            // Tetti rosso mattone: solo col 3D acceso e NON in modalita'
+            // temperatura (li' i tetti rossi coprirebbero la scala cromatica).
+            buildRoofLayer(
+              visibility['buildings-3d'] && !visibility['buildings-temp'],
+              buildingsUrl,
+            ),
+            ...treeLayers,
+            buildSelectedTreeLayer(selectedTree),
+            buildQuartiereFlashLayer(quartieri, flashQuartiere, flashFading),
+            buildQuartiereLabelsLayer(quartieri),
           ].filter(Boolean) as Layer[],
         })
-        // Cambiare `_shadow` ri-inizializza il modulo ombre di deck.gl senza
-        // ridisegnare da solo: senza questo redraw forzato gli edifici
-        // sparivano (frame vuoto) finche' non muovevi la mappa.
+        // Cambiare lo shadowColor (alpha 0/0.5) aggiorna un uniform ma non
+        // ridisegna da solo: forzo un repaint cosi' l'on/off delle ombre si
+        // vede subito, senza dover muovere la mappa.
         map.triggerRepaint()
       }
     }
     if (map.isStyleLoaded()) apply()
     else map.once('idle', apply)
-  }, [visibility, trees, buildingsUrl, tempRecords, currentTime, envimetOverlays])
+  }, [
+    visibility,
+    treeLayers,
+    selectedTree,
+    quartieri,
+    flashQuartiere,
+    flashFading,
+    overlayReady,
+    buildingsUrl,
+    tempRecords,
+    currentTime,
+    envimetOverlays,
+  ])
 
   // Basemap switcher: setStyle distrugge i source/layer custom, quindi dopo
   // 'style.load' ri-eseguo addCustomLayers (registrata in reapplyRef).
@@ -1576,6 +1961,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
           toCss(BOLOGNA_FOREST_DARK),
         )
       }
+      whitenMapLabels(map)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basemap])
@@ -1590,14 +1976,44 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // standard). Setta `selectedQuartiere` cosi' compare il badge
   // "Quartiere: X" sotto la search bar -- il blocco rosso pseudo-3D
   // e' stato rimosso dalla pipeline deck.gl, niente highlight 3D.
-  const jumpToQuartiere = (f: QuartiereFeature) => {
+  // Bordo quartiere colorato: pieno per 4s, poi fade di 1s -> via a 5s.
+  const triggerQuartiereFlash = (codQuar: number) => {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+    if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
+    setFlashFading(false)
+    setFlashQuartiere(codQuar)
+    fadeTimerRef.current = setTimeout(() => setFlashFading(true), 4000)
+    flashTimerRef.current = setTimeout(() => {
+      setFlashQuartiere(null)
+      setFlashFading(false)
+    }, 5000)
+  }
+
+  // Inquadra l'INTERO quartiere col suo contorno (fitBounds sulla bbox, con
+  // padding per le UI sopra/sotto), preservando un po' di 3D (pitch 35).
+  const fitQuartiere = (bbox: [number, number, number, number]) => {
     const map = mapRef.current
     if (!map) return
-    const [minlon, minlat, maxlon, maxlat] = f.properties.bbox
-    const cx = (minlon + maxlon) / 2
-    const cy = (minlat + maxlat) / 2
-    map.flyTo({ center: [cx, cy], zoom: 15, bearing: 0, duration: 1500 })
+    const [minlon, minlat, maxlon, maxlat] = bbox
+    map.fitBounds(
+      [
+        [minlon, minlat],
+        [maxlon, maxlat],
+      ],
+      {
+        padding: { top: 96, bottom: 140, left: 70, right: 70 },
+        pitch: 35,
+        bearing: 0,
+        duration: 1400,
+      },
+    )
+  }
+
+  const jumpToQuartiere = (f: QuartiereFeature) => {
+    if (!mapRef.current) return
+    fitQuartiere(f.properties.bbox)
     setSelectedQuartiere(f.properties.cod_quar)
+    triggerQuartiereFlash(f.properties.cod_quar)
   }
 
   const jumpToCity = () => {
@@ -1621,7 +2037,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
     const sun = getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0])
     return nightFactor(sun.altitudeDeg)
   }, [currentTime])
-  const nightOverlayOpacity = currentNightFactor * 0.55
+  // Max 0.35 (prima 0.55): mantiene l'atmosfera notturna ma lascia ben visibili
+  // gli edifici, che di notte sono illuminati dal solo ambient.
+  const nightOverlayOpacity = currentNightFactor * 0.35
 
   // Match dei 6 quartieri di Bologna: case-insensitive sul nome, senza
   // accenti/punteggiatura (es. "S. Stefano" deve matchare "Santo Stefano").
@@ -1681,15 +2099,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
     const map = mapRef.current
     if (!map) return
     if (res.type === 'quartiere') {
-      const [minlon, minlat, maxlon, maxlat] = res.bbox
-      map.fitBounds(
-        [
-          [minlon, minlat],
-          [maxlon, maxlat],
-        ],
-        { padding: 80, pitch: 55, duration: 1200 },
-      )
+      fitQuartiere(res.bbox)
       setSelectedQuartiere(res.cod_quar)
+      triggerQuartiereFlash(res.cod_quar)
       searchMarkerRef.current?.remove()
       searchMarkerRef.current = null
     } else {
