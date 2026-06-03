@@ -41,12 +41,15 @@ OVERPASS_ENDPOINTS = [
 
 def build_query(bbox: tuple[float, float, float, float]) -> str:
     s, w, n, e = bbox
+    # `out body;` (non `out skel;`) per conservare i TAG OSM dei nodi
+    # (genere/specie/altezza/circonferenza dove mappati), oltre a lat/lon.
+    # Servono al popup info dell'albero nel viewer (MapViewer.tsx).
     return (
         f"[out:json][timeout:90];\n"
         f"(\n"
         f"  node[\"natural\"=\"tree\"]({s},{w},{n},{e});\n"
         f");\n"
-        f"out skel;\n"
+        f"out body;\n"
     )
 
 
@@ -77,6 +80,17 @@ def fetch(query: str) -> dict:
     raise SystemExit(f"[OSM-TREES] nessun endpoint Overpass ha risposto: {last_err}")
 
 
+# Tag OSM utili da conservare nel GeoJSON (il viewer li mostra nel popup
+# info dell'albero). Tenuti a whitelist per non gonfiare il file.
+TREE_TAG_KEYS = (
+    "genus",
+    "species",
+    "leaf_type",
+    "height",
+    "circumference",
+)
+
+
 def to_geojson(payload: dict) -> dict:
     features: list[dict] = []
     for el in payload.get("elements", []):
@@ -86,10 +100,15 @@ def to_geojson(payload: dict) -> dict:
         lat = el.get("lat")
         if lon is None or lat is None:
             continue
+        tags = el.get("tags") or {}
+        props: dict = {"id": el["id"]}
+        for k in TREE_TAG_KEYS:
+            if k in tags:
+                props[k] = tags[k]
         features.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [lon, lat]},
-            "properties": {"id": el["id"]},
+            "properties": props,
         })
     return {"type": "FeatureCollection", "features": features}
 

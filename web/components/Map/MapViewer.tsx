@@ -121,11 +121,11 @@ const LAYERS: {
   category: CategoryKey
 }[] = [
   { id: 'buildings-3d', labelKey: 'layer_buildings_3d', default: true, category: 'edifici' },
-  { id: 'shadows', labelKey: 'layer_shadows', default: true, category: 'edifici' },
+  { id: 'shadows', labelKey: 'layer_shadows', default: false, category: 'edifici' },
   { id: 'buildings-particellari', labelKey: 'layer_buildings_2d', default: false, category: 'edifici' },
   { id: 'buildings-temp', labelKey: 'layer_buildings_temp', default: false, category: 'edifici' },
-  { id: 'trees', labelKey: 'layer_trees', default: true, category: 'verde' },
-  { id: 'green-areas', labelKey: 'layer_green', default: true, category: 'verde' },
+  { id: 'trees', labelKey: 'layer_trees', default: false, category: 'verde' },
+  { id: 'green-areas', labelKey: 'layer_green', default: false, category: 'verde' },
   { id: 'parks', labelKey: 'layer_parks', default: false, category: 'verde' },
   { id: 'private-green', labelKey: 'layer_private_green', default: false, category: 'verde' },
   { id: 'air-stations', labelKey: 'layer_air', default: false, category: 'ambiente' },
@@ -299,7 +299,16 @@ function makeFirMesh() {
 }
 const TREE_MESH = makeFirMesh()
 
-type TreePoint = { position: [number, number]; seed: number }
+// Proprietà grezze dell'albero dal GeoJSON sorgente. Oggi quasi sempre vuote
+// (DBTR: {} ; OSM scaricato con `out skel;` -> solo `id`): il popup mostra
+// allora la sola posizione. Se la sorgente viene arricchita
+// (specie/genere/altezza/circonferenza) quei campi compaiono da soli.
+type TreeProps = Record<string, string | number | null | undefined>
+type TreePoint = {
+  position: [number, number]
+  seed: number
+  props: TreeProps
+}
 
 // Hash deterministico per dare un po' di variazione (scala + tonalita') a
 // ogni albero senza fare flicker tra render.
@@ -323,17 +332,20 @@ function buildLightingEffect(
   )
   const isDay = sunPos.altitudeDeg > 0
   const shadowsActive = isDay && shadowsOn
-  // IMPORTANTE: `_shadow` dipende SOLO dal giorno/notte, NON dal toggle
-  // "Ombre". Cambiare `_shadow` a runtime ricostruisce il modulo ombre di
-  // deck.gl e su alcune GPU lascia la scena vuota (edifici spariti). Tenendolo
-  // costante (sempre acceso di giorno) il modulo non si ricostruisce mai;
-  // il toggle "Ombre" agisce solo sulla TRASPARENZA dell'ombra (shadowColor
-  // alpha 0..1), che e' un semplice cambio di uniform.
+  // `_shadow` segue il toggle "Ombre" (shadowsActive = giorno && ombreOn):
+  // ombre OFF => nessun shadow pass, quindi NESSUNA ombra proiettata. Azzerare
+  // solo `shadowColor` (alpha 0) non bastava: su alcune GPU restava comunque
+  // un alone d'ombra, ed era questo il motivo per cui "Ombre" deselezionato
+  // lasciava lo stesso le ombre. Cambiare `_shadow` a runtime ricostruisce il
+  // modulo ombre di deck.gl senza ridisegnare da solo (frame vuoto, edifici
+  // spariti finche' non muovi la mappa): il redraw forzato e' il
+  // `map.triggerRepaint()` chiamato subito dopo `overlay.setProps(...)` nel
+  // toggle effect.
   const sun = new SunLight({
     timestamp,
     color: [255, 255, 255],
     intensity: isDay ? 1.5 : 0,
-    _shadow: isDay,
+    _shadow: shadowsActive,
   })
   const ambient = new AmbientLight({
     color: [255, 255, 255],
@@ -484,7 +496,7 @@ function buildTreesLayers(
     diskResolution: 10,
     radius: TRUNK_RADIUS,
     extruded: true,
-    pickable: false,
+    pickable: true,
     getPosition: (d) => d.position,
     getElevation: (d) => TRUNK_HEIGHT * (0.85 + d.seed * 0.4),
     getFillColor: [82, 58, 38, 255],
@@ -519,7 +531,7 @@ function buildTreesLayers(
     id: 'trees-canopy',
     data,
     mesh: TREE_MESH,
-    pickable: false,
+    pickable: true,
     getPosition: (d) => d.position,
     getTranslation: (d) => [0, 0, trunkTopOf(d) - 0.3],
     getScale: (d) => {
@@ -530,6 +542,68 @@ function buildTreesLayers(
     material: canopyMaterial,
   })
   return [trunk, canopy]
+}
+
+// Segnaposto del punto cliccato: icona INFO (cerchio rosso Bologna con bordo
+// bianco e "i" bianca), NON un pin da mappa. Drop-shadow per staccare da
+// QUALSIASI basemap (satellite, ortofoto, dark). E' un elemento DOM custom,
+// distinto dalla goccia ciano usata per i risultati di ricerca. Essendo un
+// cerchio simmetrico va centrato sul punto: abbinare ad anchor 'center'.
+function makeProbeInfoElement(): HTMLDivElement {
+  const el = document.createElement('div')
+  el.style.width = '30px'
+  el.style.height = '30px'
+  el.style.cursor = 'pointer'
+  el.style.filter = 'drop-shadow(0 2px 3px rgba(0,0,0,0.5))'
+  el.innerHTML =
+    '<svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
+    `<circle cx="12" cy="12" r="10.5" fill="${toCss(BOLOGNA_RED)}" stroke="#ffffff" stroke-width="2"/>` +
+    '<circle cx="12" cy="7" r="1.7" fill="#ffffff"/>' +
+    '<rect x="10.6" y="10.2" width="2.8" height="7.6" rx="1.3" fill="#ffffff"/>' +
+    '</svg>'
+  return el
+}
+
+// Etichette IT/EN per gli attributi albero che POTREBBERO comparire se la
+// sorgente viene arricchita (OSM `out tags;`, o un DBTR con specie). Se nel
+// dataset attuale non ci sono, il popup mostra solo la posizione.
+const TREE_FIELD_LABELS: Record<string, { it: string; en: string }> = {
+  genus: { it: 'Genere', en: 'Genus' },
+  species: { it: 'Specie', en: 'Species' },
+  leaf_type: { it: 'Tipo foglia', en: 'Leaf type' },
+  height: { it: 'Altezza', en: 'Height' },
+  circumference: { it: 'Circonferenza', en: 'Circumference' },
+}
+
+// HTML del popup info di un albero cliccato. Stile coerente col popup delle
+// centraline qualita' aria. Mostra gli attributi noti presenti + ID + coord.
+function treePopupHtml(
+  lat: number,
+  lon: number,
+  props: TreeProps,
+  lang: Lang,
+): string {
+  const title = lang === 'it' ? '🌳 Albero' : '🌳 Tree'
+  const row = (label: string, value: string | number) =>
+    `<div style="display:flex;justify-content:space-between;gap:10px;"><span>${label}</span><b>${value}</b></div>`
+  const rows: string[] = []
+  for (const [key, lab] of Object.entries(TREE_FIELD_LABELS)) {
+    const v = props[key]
+    if (v != null && v !== '') rows.push(row(lang === 'it' ? lab.it : lab.en, v))
+  }
+  if (props.id != null) rows.push(row('ID', props.id))
+  if (rows.length === 0) {
+    rows.push(
+      `<div style="color:#777;">${lang === 'it' ? 'Nessun attributo nel dataset' : 'No attributes in dataset'}</div>`,
+    )
+  }
+  return (
+    `<div style="font-family:ui-monospace,monospace;font-size:12px;color:#222;min-width:150px;">` +
+    `<div style="color:#2f7d32;font-weight:700;margin-bottom:4px;">${title}</div>` +
+    rows.join('') +
+    `<div style="color:#999;margin-top:4px;">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>` +
+    `</div>`
+  )
 }
 
 type MapViewerProps = {
@@ -552,8 +626,18 @@ export default function MapViewer({ lang }: MapViewerProps) {
       >,
   )
   const [trees, setTrees] = useState<TreePoint[] | null>(null)
+  // Evita fetch doppi del GeoJSON alberi (lazy: parte al primo toggle del
+  // layer 'Alberi'). Su errore viene rimesso a false per consentire un retry.
+  const treesRequestedRef = useRef(false)
   const [tempRecords, setTempRecords] = useState<TempRecord[] | null>(null)
   const [probe, setProbe] = useState<{ lat: number; lon: number } | null>(null)
+  // Albero cliccato (picking deck.gl): mostra un popup con le sue info.
+  const [selectedTree, setSelectedTree] = useState<{
+    lon: number
+    lat: number
+    props: TreeProps
+  } | null>(null)
+  const treePopupRef = useRef<maplibregl.Popup | null>(null)
   // Valori campionati al punto cliccato, derivati da `probe` + layer attivi:
   // vento solo se il layer 'wind' e' acceso, microclima per ogni overlay
   // ENVI-met spuntato.
@@ -613,35 +697,40 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // corrente senza ricreare la mappa.
   const currentTimeRef = useRef<Date>(new Date(2026, 5, 21, 12, 0, 0))
 
-  // Carica gli alberi una volta sola: prova prima il dataset OSM (Overpass),
-  // fallback al DBTR clippato all'AOI.
+  // Carica gli alberi in modo LAZY: il GeoJSON OSM pesa ~18 MB (106k alberi
+  // con specie/genere), inutile scaricarlo finche' il layer 'Alberi' resta
+  // spento (e' off di default). Parte al primo attivamento del toggle; prova
+  // OSM (Overpass), fallback al DBTR clippato all'AOI. Un solo fetch grazie a
+  // treesRequestedRef (rimesso a false su errore per consentire un retry).
   useEffect(() => {
-    let cancelled = false
+    if (!visibility['trees'] || treesRequestedRef.current) return
+    treesRequestedRef.current = true
     const tryFetch = async (url: string) => {
       const r = await fetch(url)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       return r.json() as Promise<{
-        features: { geometry: { coordinates: [number, number] } }[]
+        features: {
+          geometry: { coordinates: [number, number] }
+          properties?: TreeProps | null
+        }[]
       }>
     }
     tryFetch(TREES_OSM_URL)
       .catch(() => tryFetch(TREES_DBTR_URL))
       .then((fc) => {
-        if (cancelled) return
         setTrees(
           fc.features.map((f) => ({
             position: f.geometry.coordinates,
             seed: hashSeed(f.geometry.coordinates[0], f.geometry.coordinates[1]),
+            props: f.properties ?? {},
           })),
         )
       })
       .catch(() => {
-        if (!cancelled) setTrees([])
+        setTrees([])
+        treesRequestedRef.current = false
       })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  }, [visibility])
 
   // Carica la serie temperatura una volta sola.
   useEffect(() => {
@@ -880,9 +969,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
     setTempLookup(lookupTemperature(tempRecords, currentTime))
   }, [probe, tempRecords, currentTime])
 
-  // Segnaposto del punto cliccato (stile Google Maps): un pin ambra sul
-  // punto selezionato. Si sposta al click successivo e sparisce alla
-  // chiusura dell'InfoPanel (probe -> null).
+  // Segnaposto del punto cliccato: un'icona INFO rossa sul punto selezionato.
+  // Si sposta al click successivo e sparisce alla chiusura dell'InfoPanel
+  // (probe -> null).
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
@@ -892,8 +981,13 @@ export default function MapViewer({ lang }: MapViewerProps) {
       return
     }
     if (!probeMarkerRef.current) {
-      // Colore del brand UrbanScope3D (text-cyan-400 = #22d3ee).
-      const marker = new maplibregl.Marker({ color: '#22d3ee' })
+      // Icona info custom (vedi makeProbeInfoElement): alto contrasto su ogni
+      // basemap e distinta dalla goccia ciano della ricerca. anchor 'center'
+      // => il cerchio info e' centrato sul punto cliccato.
+      const marker = new maplibregl.Marker({
+        element: makeProbeInfoElement(),
+        anchor: 'center',
+      })
         .setLngLat([probe.lon, probe.lat])
         .addTo(map)
       // Sempre sopra a tutto: MapLibre assegna lo z-index ai marker per
@@ -905,6 +999,42 @@ export default function MapViewer({ lang }: MapViewerProps) {
       probeMarkerRef.current.setLngLat([probe.lon, probe.lat])
     }
   }, [probe])
+
+  // Popup info dell'albero cliccato (marker DOM MapLibre, sopra agli edifici
+  // deck.gl). Un nuovo click su un altro albero lo sposta; un click sul vuoto
+  // o sul tasto × lo chiude (setSelectedTree -> null).
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (!selectedTree) {
+      treePopupRef.current?.remove()
+      treePopupRef.current = null
+      return
+    }
+    if (!treePopupRef.current) {
+      const popup = new maplibregl.Popup({
+        closeButton: true,
+        offset: 14,
+        anchor: 'bottom',
+        className: 'us3d-popup',
+      })
+      // Chiusura col × => azzero lo stato (cur gia' null quando siamo noi a
+      // rimuoverlo nel cleanup: il guard evita un set ridondante).
+      popup.on('close', () => setSelectedTree((cur) => (cur ? null : cur)))
+      treePopupRef.current = popup
+    }
+    treePopupRef.current
+      .setLngLat([selectedTree.lon, selectedTree.lat])
+      .setHTML(
+        treePopupHtml(
+          selectedTree.lat,
+          selectedTree.lon,
+          selectedTree.props,
+          lang,
+        ),
+      )
+      .addTo(map)
+  }, [selectedTree, lang])
 
   // Costruzione mappa.
   useEffect(() => {
@@ -1160,8 +1290,36 @@ export default function MapViewer({ lang }: MapViewerProps) {
       map.setSky(computeSky(sun0.altitudeDeg))
 
       map.on('click', (e) => {
-        // I valori (vento / microclima) sono derivati in un effect dai layer
-        // attivi: qui registro solo il punto.
+        // Prima controllo se ho cliccato un albero (layer deck.gl pickable):
+        // in tal caso mostro il popup info dell'albero e NON apro il probe
+        // microclima. radius 6px per agganciare anche i tronchi sottili.
+        const ov = overlayRef.current as unknown as {
+          pickObject?: (p: {
+            x: number
+            y: number
+            radius?: number
+            layerIds?: string[]
+          }) => { object?: TreePoint } | null
+        } | null
+        const picked = ov?.pickObject?.({
+          x: e.point.x,
+          y: e.point.y,
+          radius: 6,
+          layerIds: ['trees-canopy', 'trees-trunk'],
+        })
+        if (picked && picked.object) {
+          const tp = picked.object
+          setSelectedTree({
+            lon: tp.position[0],
+            lat: tp.position[1],
+            props: tp.props,
+          })
+          setProbe(null)
+          return
+        }
+        // Click sul vuoto/edificio: i valori (vento / microclima) sono derivati
+        // in un effect dai layer attivi, qui registro solo il punto.
+        setSelectedTree(null)
         setProbe({ lat: e.lngLat.lat, lon: e.lngLat.lng })
       })
 
@@ -1245,6 +1403,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
     return () => {
       noiseTipRef.current?.remove()
       noiseTipRef.current = null
+      treePopupRef.current?.remove()
+      treePopupRef.current = null
       audioRef.current?.ctx.close().catch(() => {})
       audioRef.current = null
       map.remove()
