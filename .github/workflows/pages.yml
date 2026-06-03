@@ -1,30 +1,17 @@
 name: Build (Next static export)
 
-# Verifica solo che `next build` esca pulito a ogni push.
-# Il deploy su GitHub Pages e' temporaneamente disattivato: il repo
-# dclfbk/UrbanScope3D non ha ancora Pages abilitato (Settings -> Pages
-# -> Source: GitHub Actions) e il deploy fallirebbe. Intanto il deploy
-# pubblico avviene su Vercel via integration.
+# Verifica solo che `next build` esca pulito a ogni push (CI check).
 #
-# Quando Pages sara' attivo, aggiungere sotto il job `build`:
+# Il deploy pubblico NON avviene da questo workflow: il sito e' servito da
+# GitHub Pages a partire dalla cartella `docs/` su main
+# (Settings -> Pages -> Source: Deploy from a branch -> main -> /docs).
+# Per aggiornare il sito si ri-builda l'app e si committa il nuovo `docs/`:
 #
-#   - uses: actions/configure-pages@v5
-#   - uses: actions/upload-pages-artifact@v3
-#     with:
-#       path: web/out
+#   cd web
+#   NEXT_PUBLIC_BASE_PATH=/UrbanScope3D npm run build   # genera web/out
+#   # copiare il contenuto di web/out in ../docs (incluso .nojekyll)
 #
-#   deploy:
-#     needs: build
-#     runs-on: ubuntu-latest
-#     permissions:
-#       pages: write
-#       id-token: write
-#     environment:
-#       name: github-pages
-#       url: ${{ steps.deployment.outputs.page_url }}
-#     steps:
-#       - id: deployment
-#         uses: actions/deploy-pages@v4
+# URL pubblico: https://dclfbk.github.io/UrbanScope3D/
 
 on:
   push:
