@@ -100,6 +100,27 @@ VARIABLES = [
     ("mean_radiant_temp", "26_mean_radiant_temp_all_z.tif", "Mean Radiant Temp.", "°C", "ylorrd", "band"),
 ]
 
+# Range colore FISSI per variabile (vmin, vmax) -> "stesso colore = stesso
+# valore" sempre, anche fra sim diverse e fra layer; la legenda diventa
+# confrontabile. Prima ogni overlay si stirava sul proprio percentile 2-98, e i
+# colori non erano comparabili. Envelope fisici tondi che contengono i dati
+# osservati (sim 2024-07-27 11:00) con un po' di margine per sim future.
+# NB: scelta PER-VARIABILE, non per-famiglia: temperatura aria e MRT sono
+# entrambe in °C ma su scale diverse (l'MRT al sole sale molto piu' in alto), e
+# le tre radiazioni SW hanno magnitudini diverse (diretta ~1000, diffusa/
+# riflessa ~100-400) -> condividere un'unica scala appiattirebbe il contrasto.
+# Per confrontare fra loro la terna radiazione bisogna leggere i numeri in
+# legenda. Variabili senza voce qui ricadono sul percentile 2-98 (fallback).
+FIXED_RANGES = {
+    "temperature": (24.0, 40.0),
+    "humidity": (30.0, 70.0),
+    "vegetation_lad": (0.0, 0.5),
+    "direct_sw": (0.0, 1000.0),
+    "diffuse_sw": (0.0, 200.0),
+    "reflected_sw": (0.0, 400.0),
+    "mean_radiant_temp": (20.0, 80.0),
+}
+
 
 def build_lut(ramp):
     """LUT 256x3 uint8 da una rampa (stop, rgb)."""
@@ -198,11 +219,17 @@ def main():
         if valid.size == 0:
             print(f"[skip] {key}: nessun dato valido")
             continue
-        # range robusto (2-98 percentile) per evitare outlier
-        vmin = float(np.percentile(valid, 2))
-        vmax = float(np.percentile(valid, 98))
-        if vmax - vmin < 1e-6:
-            vmin, vmax = float(valid.min()), float(valid.max() + 1e-3)
+        # Range FISSO per variabile (scala confrontabile e stabile fra sim); se
+        # la variabile non e' in FIXED_RANGES, fallback al percentile 2-98.
+        if key in FIXED_RANGES:
+            vmin, vmax = FIXED_RANGES[key]
+            range_mode = "fixed"
+        else:
+            vmin = float(np.percentile(valid, 2))
+            vmax = float(np.percentile(valid, 98))
+            range_mode = "percentile"
+            if vmax - vmin < 1e-6:
+                vmin, vmax = float(valid.min()), float(valid.max() + 1e-3)
 
         rgba = colorize(b, vmin, vmax, ramp, mask)
         png_path = OUT_DIR / f"{key}.png"
@@ -226,12 +253,13 @@ def main():
             "values": f"/data/processed/envimet/{key}.values.json",
             "z_band": Z_BAND if agg == "band" else "max-z",
             "range": {"min": round(vmin, 2), "max": round(vmax, 2)},
+            "range_mode": range_mode,
             "observed": {"min": round(float(valid.min()), 2), "max": round(float(valid.max()), 2)},
             "bounds": bounds,
             "coordinates": coordinates,
             "legend": legend_items(vmin, vmax, ramp),
         })
-        print(f"[ok] {key}: agg={agg} range {vmin:.2f}..{vmax:.2f} {unit} -> {png_path.name}")
+        print(f"[ok] {key}: agg={agg} range[{range_mode}] {vmin:.2f}..{vmax:.2f} {unit} -> {png_path.name}")
 
         if key == "temperature":
             temp_band = b

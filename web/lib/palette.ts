@@ -29,5 +29,16 @@ export const BOLOGNA_SANGIOVESE: RGB = [123, 36, 28]
 // all'orizzonte invece di sparire nel buio.
 export const BOLOGNA_FOREST_DARK: RGB = [31, 56, 38]
 
+// ---------------------------------------------------------------------------
+// Brand Talea (manuale d'immagine, documentation/TALEA_BRAND GUIDELINE.pdf).
+// La UI chrome usa il BLU come colore primario (vedi scala `talea-*` in
+// globals.css). Questi sono gli stessi colori in RGB, disponibili se in futuro
+// si vuole portarli anche nel rendering 3D (deck.gl).
+// ---------------------------------------------------------------------------
+export const TALEA_BLUE: RGB = [18, 114, 183] // #1272B7
+export const TALEA_GREEN: RGB = [33, 168, 74] // #21A84A
+export const TALEA_GREEN_DARK: RGB = [0, 77, 25] // #004D19
+export const TALEA_YELLOW: RGB = [255, 230, 4] // #FFE604
+
 export const withAlpha = (c: RGB, a: number): RGBA => [c[0], c[1], c[2], a]
 export const toCss = (c: RGB): string => `rgb(${c[0]},${c[1]},${c[2]})`

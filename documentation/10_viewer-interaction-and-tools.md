@@ -65,11 +65,11 @@ To enable: repo Settings → Pages → Source = *Deploy from a branch* → `main
 
 | Status | Item |
 |---|---|
-| TODO | Change the click marker icon — current one is hard to read |
-| TODO | On neighborhood select, show its perimeter (always, or flash for a few seconds) |
-| TODO | Screenshot / print button |
+| DONE | Change the click marker icon — current one is hard to read |
+| DONE | On neighborhood select, show its perimeter (always, or flash for a few seconds) |
+| DONE | Screenshot / print button |
 | TODO | Legend on/off when printing |
-| TODO | Share to Instagram / social |
+| DONE | Share to Instagram / social |
 
 Notes:
 
@@ -80,7 +80,16 @@ Notes:
   layer; if it's noisy to keep on, fade it out after ~3 s.
 - Print: MapLibre canvas + the deck.gl overlay need to be captured together.
   `preserveDrawingBuffer` on the GL context, then compose with the legend
-  panel (or not) into one PNG.
+  panel (or not) into one PNG. **Done** (`composeSceneBlob` in `MapViewer.tsx`):
+  draws every `<canvas>` in the container onto one 2D canvas → PNG. Captures
+  *only* the canvases, so the DOM panels (incl. the legend) never end up in the
+  shot — the image is always clean. The "legend on/off in the export" is still
+  TODO: it would mean *drawing* the legend into the PNG, which isn't done yet.
+- Share (DONE): same `composeSceneBlob`, then the Web Share API. Prefers sharing
+  the image **file** (`navigator.canShare({files})` → on mobile opens the native
+  sheet, so Instagram/WhatsApp/… work); falls back to sharing the page URL, then
+  on desktop to downloading the PNG + copying the link (with a toast). The share
+  icon sits next to the screenshot button, bottom-left.
 
 ---
 
@@ -88,15 +97,32 @@ Notes:
 
 | Status | Item |
 |---|---|
-| TODO | Align colour scales across the Talea overlays |
+| DONE | Align colour scales across the Talea overlays |
 
-Right now each overlay stretches its own 2–98 percentile range, so the
-colours aren't comparable between variables (and between this and any future
-sim). Decide fixed ranges per variable (or per family: temps, radiation,
-humidity) so the same colour means the same value everywhere. Ramps live in
-`build_envimet_overlays.py` (`RAMPS`) and the legends in `overlays.json`.
+Each overlay used to stretch its own 2–98 percentile range, so the colours
+weren't comparable between variables (or between this sim and any future one).
+Now `build_envimet_overlays.py` has a `FIXED_RANGES` table: fixed `(vmin, vmax)`
+per variable, so the same colour means the same value everywhere and the legend
+is stable across sims. Variables not in the table fall back to the old 2–98
+percentile (`range_mode` is recorded per overlay in `overlays.json`).
 
-*da compilare* — chosen fixed ranges per variable.
+Chosen **per-variable** (not per-family): air temp and MRT are both °C but on
+very different scales (MRT in the sun climbs much higher), and the three SW
+radiation bands differ ~5× in magnitude — sharing one scale would flatten the
+contrast. To compare across the radiation trio, read the legend numbers.
+
+Fixed ranges (envelopes that cover the observed 2024-07-27 11:00 data with a
+little headroom for future sims):
+
+| variable | unit | observed | fixed range |
+|---|---|---|---|
+| temperature | °C | 29.8–36.0 | **24–40** |
+| humidity | % | 34.6–47.2 | **30–70** |
+| vegetation_lad | m²/m³ | 0–0.3 | **0–0.5** |
+| direct_sw | W/m² | 0–988 | **0–1000** |
+| diffuse_sw | W/m² | 0–118 | **0–200** |
+| reflected_sw | W/m² | 17–383 | **0–400** |
+| mean_radiant_temp | °C | 26–80 | **20–80** |
 
 ---
 
@@ -122,8 +148,8 @@ The open problem from Issue 9: MapLibre terrain sinks the deck.gl buildings
 
 | Status | Item |
 |---|---|
-| TODO | Split trees into evergreen vs deciduous |
-| TODO | Inspect a single tree on click |
+| DONE | Split trees into evergreen vs deciduous |
+| DONE | Inspect a single tree on click |
 
 Trees are the DBTR points (`2.1_trees_aoi.geojson`) drawn as procedural firs.
 Need a species → evergreen/deciduous mapping to colour or shape them
@@ -155,14 +181,16 @@ catalogue of placeable furniture, and whether edits persist.
 
 | Status | Item |
 |---|---|
-| TODO | Add weather (meteo) |
+| DONE | Add weather (meteo) |
 
-Live or recent weather for Bologna (temp, wind, conditions) next to the
-existing time slider. Pick a source (e.g. Open-Meteo, free, no key) and
-decide whether it drives anything (sun/shadows already come from the date) or
-is just shown.
-
-*da compilare* — weather source and what it feeds.
+Live weather for Bologna shown in a panel (⛅ button, bottom-left). Source:
+**3BMeteo** (user's choice) — it has no free JSON API, only an embeddable
+widget from their builder, so we host the official iframe (module
+`localita_1_giorno_compatto`, località 8841 = Bologna, colours set to white +
+Talea blue). `MeteoWidget.tsx` renders the iframe + the required "Meteo"
+backlink. It's display-only: it does **not** drive sun/shadows (those still come
+from the date in the time slider). If we ever want it to feed the scene, we'd
+need a JSON source (e.g. Open-Meteo) instead of the widget.
 
 ---
 

@@ -85,6 +85,26 @@ export const STRINGS = {
   hideLayers: { it: 'Nascondi pannello layer', en: 'Hide layer panel' },
   showZones: { it: 'Mostra zone', en: 'Show areas' },
   hideZones: { it: 'Nascondi zone', en: 'Hide areas' },
+
+  // Vista pulita + screenshot
+  hidePanels: { it: 'Vista pulita (nascondi pannelli)', en: 'Clean view (hide panels)' },
+  showPanels: { it: 'Mostra pannelli', en: 'Show panels' },
+  screenshot: { it: 'Scarica screenshot', en: 'Download screenshot' },
+
+  // Meteo (widget 3BMeteo)
+  meteo: { it: 'Meteo', en: 'Weather' },
+  meteoTitle: { it: 'Meteo Bologna', en: 'Bologna weather' },
+
+  // Condivisione
+  share: { it: 'Condividi', en: 'Share' },
+  shareText: {
+    it: 'Bologna in 3D — UrbanScope3D',
+    en: 'Bologna in 3D — UrbanScope3D',
+  },
+  shareCopied: {
+    it: 'Link copiato negli appunti',
+    en: 'Link copied to clipboard',
+  },
 } as const
 
 export type StringKey = keyof typeof STRINGS

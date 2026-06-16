@@ -23,14 +23,9 @@ import { computeSky, nightFactor } from '@/lib/sky'
 import { buildWindSampler, type WindSampler } from '@/lib/wind'
 import { buildEnvimetSampler, type EnvimetSampler } from '@/lib/envimet'
 import { t, type Lang, type StringKey } from '@/lib/i18n'
-import {
-  loadTemperatureSeries,
-  lookupTemperature,
-  type TempLookup,
-  type TempRecord,
-} from '@/lib/temperature'
 import TimeSlider from '@/components/UI/TimeSlider'
 import InfoPanel from '@/components/UI/InfoPanel'
+import MeteoWidget from '@/components/UI/MeteoWidget'
 import { withBase } from '@/lib/basePath'
 import {
   BOLOGNA_FOREST_DARK,
@@ -160,6 +155,30 @@ const BUILDINGS_HEIGHTS_URL = withBase('/data/processed/buildings_heights.geojso
 const WIND_META_URL = withBase('/data/processed/wind_overlay.json')
 const TREES_DBTR_URL = withBase('/data/2)Vegetation/2.1_trees_aoi.geojson')
 const TREES_OSM_URL = withBase('/data/processed/trees_osm.geojson')
+// Terreno 3D: DEM Terrarium AUTO-OSPITATO in locale. Copre anche i colli a sud
+// che il DTM locale 0.5m (~1.3 km sul centro) non include. I tile sono scaricati
+// dall'AOI con scripts/download_terrain_tiles.py; le quote di base di
+// edifici/alberi sono cotte dagli STESSI tile (scripts/bake_terrain_elevation.py)
+// cosi' poggiano esattamente sulla superficie invece di stare a z=0.
+//
+// IMPORTANTE: serviti dalla stessa origine del sito. L'endpoint pubblico AWS
+// (s3.amazonaws.com/elevation-tiles-prod) NON manda header CORS, e MapLibre
+// raster-dem deve leggere i pixel per decodificare la quota: da S3 il terreno
+// resterebbe piatto e gli edifici "volerebbero".
+const TERRAIN_TILES_URL = withBase('/data/processed/terrain/{z}/{x}/{y}.png')
+// Terreno renderizzato a UN SOLO zoom (z14), uguale a quello con cui sono cotte
+// le quote di base di edifici/alberi/quartieri (bake_terrain_elevation.py
+// --zoom 14). Perche': se il terreno varia LOD con la distanza (z11 lontano,
+// z15 vicino) mentre le basi sono fisse a z14, in lontananza il terreno e' un
+// filo piu' basso e gli edifici restano "rialzati di un po'". Forzando
+// min=max=14 la superficie renderizzata coincide ESATTAMENTE con le basi cotte
+// a ogni distanza/zoom -> niente edifici sospesi. I tile z14 coprono tutti gli
+// edifici e tutto il maxBounds (verificato: lon 11.206-11.470 / lat 44.402-44.575).
+// NB: oltre quella copertura (orizzonte profondo a sud) il terreno torna piatto,
+// ma e' fuori dal maxBounds e comunque in zona dissolvenza edifici.
+const TERRAIN_MINZOOM = 14
+const TERRAIN_MAXZOOM = 14
+const TERRAIN_EXAGGERATION = 1
 const LANDUSE_URL = withBase('/data/4)LandUse-GroundSurface/4.1_uso_suolo_2020_ed2023_aoi.geojson')
 const GREEN_URL = withBase('/data/green.geojson')
 const PARKS_URL = withBase('/data/2)Vegetation/2.1_Aree_Verdi_In_Manutenzione.geojson')
@@ -353,7 +372,10 @@ const BROADLEAF_ZMAX = 1.0
 // scegliere forma/altezza della chioma. Possono mancare: il popup degrada.
 type TreeProps = Record<string, string | number | null | undefined>
 type TreePoint = {
-  position: [number, number]
+  // [lon, lat, quota_terreno]: la z e' cotta nel geojson OSM cosi' l'albero
+  // poggia sul terreno 3D (vedi scripts/bake_terrain_elevation.py). Col
+  // fallback DBTR (non cotto) la z e' 0.
+  position: [number, number, number]
   seed: number
   props: TreeProps
 }
@@ -447,6 +469,8 @@ type QuartiereFeature = {
     bbox: [number, number, number, number]
   }
   geometry: {
+    // Sempre MultiPolygon (build_quartieri.py dissolve + wrap). La z dei vertici
+    // e' cotta dal terreno (bake_terrain_elevation.py) -> il bordo segue i colli.
     type: 'MultiPolygon'
     coordinates: number[][][][]
   }
@@ -491,12 +515,17 @@ function buildSelectedQuartiereLayer(
   })
 }
 
-// Colore del brand UrbanScope3D (text-cyan-400 = #22d3ee).
-const BRAND_CYAN: RGB = [34, 211, 238]
+// Colore di brand Talea per il feedback di selezione: BLU #1272B7 (manuale
+// d'immagine). Prima era il ciano UrbanScope3D #22d3ee [34, 211, 238] — molto
+// bello, tenuto commentato per poterci tornare.
+// const BRAND_CYAN: RGB = [34, 211, 238]
+const BRAND_BLUE: RGB = [18, 114, 183]
 
 // Bordo del quartiere che si colora al cambio quartiere e poi svanisce in fade.
-// Colore brand ciano, sopra ai palazzi (depthCompare 'always'). `fading` porta
-// l'alpha a 0 e una transizione deck.gl di 1s lo dissolve dolcemente.
+// SOLO perimetro (niente riempimento): prima il fill blu semitrasparente
+// copriva tutta l'area tingendo anche le strade. Colore brand blu, sopra ai
+// palazzi (depthCompare 'always'). `fading` porta l'alpha a 0 e una transizione
+// deck.gl di 1s lo dissolve dolcemente.
 function buildQuartiereFlashLayer(
   quartieri: QuartiereFeature[] | null,
   codQuar: number | null,
@@ -509,17 +538,16 @@ function buildQuartiereFlashLayer(
     id: 'quartiere-flash',
     data: { type: 'FeatureCollection', features: [feat] },
     stroked: true,
-    filled: true,
+    filled: false,
     extruded: false,
-    getFillColor: withAlpha(BRAND_CYAN, fading ? 0 : 50),
-    getLineColor: withAlpha(BRAND_CYAN, fading ? 0 : 255),
+    getLineColor: withAlpha(BRAND_BLUE, fading ? 0 : 255),
     lineWidthUnits: 'pixels',
     getLineWidth: 4,
     lineWidthMinPixels: 4,
     pickable: false,
     parameters: { depthCompare: 'always' },
-    updateTriggers: { getFillColor: fading, getLineColor: fading },
-    transitions: { getFillColor: 1000, getLineColor: 1000 },
+    updateTriggers: { getLineColor: fading },
+    transitions: { getLineColor: 1000 },
   })
 }
 
@@ -583,7 +611,67 @@ function ylOrRd(t: number): [number, number, number] {
 // Grigio per edifici senza dato di temperatura (fuori dal dominio ENVI-met).
 const BUILDING_GREY: [number, number, number] = [120, 124, 130]
 
-type BuildingTempFeature = {
+// Dissolvenza per distanza: gli edifici lontani dal centro vista sfumano fino a
+// sparire, cosi' in vista bassa non restano "sospesi" all'orizzonte. Pieni
+// entro NEAR, invisibili oltre FAR, lineari in mezzo. Centro = map.getCenter()
+// aggiornato a 'moveend' (vedi fadeCenter nello stato).
+const BUILDINGS_FADE_NEAR_M = 1500
+const BUILDINGS_FADE_FAR_M = 3500
+type FadeCfg = { lon: number; lat: number; near: number; far: number }
+
+// Solo le slot di cache del centroide (__cx/__cy): gli oggetti feature sono
+// riusati da deck fra un recolor e l'altro, quindi il centroide si calcola una
+// volta sola per edificio. NB: NON dichiaro `geometry` nel tipo perche' il
+// Geometry di deck (Point|Polygon|...) non combacerebbe e romperebbe
+// l'inferenza degli accessor -> la leggo via cast a GeomLike.
+type Centroidable = { __cx?: number; __cy?: number }
+type GeomLike = {
+  geometry?: {
+    type: string
+    coordinates: number[][][] | number[][][][]
+  } | null
+}
+function featureCentroid(f: Centroidable): [number, number] {
+  if (f.__cx !== undefined && f.__cy !== undefined) return [f.__cx, f.__cy]
+  const g = (f as GeomLike).geometry
+  let ring: number[][] | null = null
+  if (g?.type === 'Polygon') ring = g.coordinates[0] as number[][]
+  else if (g?.type === 'MultiPolygon')
+    ring = (g.coordinates as number[][][][])[0][0]
+  let cx = 0
+  let cy = 0
+  if (ring && ring.length) {
+    for (const p of ring) {
+      cx += p[0]
+      cy += p[1]
+    }
+    cx /= ring.length
+    cy /= ring.length
+  }
+  f.__cx = cx
+  f.__cy = cy
+  return [cx, cy]
+}
+// Fattore 1..0 in base alla distanza del centroide dal centro vista.
+function fadeFactor(f: Centroidable, fade: FadeCfg | null): number {
+  if (!fade) return 1
+  const [lon, lat] = featureCentroid(f)
+  const dx = (lon - fade.lon) * Math.cos((fade.lat * Math.PI) / 180) * 111320
+  const dy = (lat - fade.lat) * 110540
+  const d = Math.hypot(dx, dy)
+  if (d <= fade.near) return 1
+  if (d >= fade.far) return 0
+  return 1 - (d - fade.near) / (fade.far - fade.near)
+}
+// Applica il fattore di dissolvenza all'alpha di un colore RGBA.
+function withFade(
+  c: [number, number, number, number],
+  a: number,
+): [number, number, number, number] {
+  return a >= 1 ? c : [c[0], c[1], c[2], Math.round(c[3] * a)]
+}
+
+type BuildingFeature = Centroidable & {
   properties?: { height?: number; air_temp?: number } | null
 }
 
@@ -593,34 +681,53 @@ function buildShadowBuildingsLayer(
   // Se valorizzato, gli edifici sono colorati per `air_temp` (ENVI-met)
   // normalizzata su questo range; chi non ha il dato resta grigio.
   tempRange: { min: number; max: number } | null,
+  // Dissolvenza per distanza (null = nessuna).
+  fade: FadeCfg | null,
 ): GeoJsonLayer | null {
   if (!visible) return null
-  const solidOcra = withAlpha(BOLOGNA_OCRA, 240)
-  const getFillColor = tempRange
-    ? (f: BuildingTempFeature): [number, number, number, number] => {
-        const tC = f.properties?.air_temp
-        if (typeof tC !== 'number')
-          return [...BUILDING_GREY, 235] as [number, number, number, number]
-        const tNorm = (tC - tempRange.min) / (tempRange.max - tempRange.min || 1)
-        return [...ylOrRd(tNorm), 245] as [number, number, number, number]
-      }
-    : solidOcra
+  const ocra = withAlpha(BOLOGNA_OCRA, 240) as [number, number, number, number]
+  const lineBase = withAlpha(BOLOGNA_SANGIOVESE, 255) as [
+    number,
+    number,
+    number,
+    number,
+  ]
+  const baseColor = (f: BuildingFeature): [number, number, number, number] => {
+    if (tempRange) {
+      const tC = f.properties?.air_temp
+      if (typeof tC !== 'number')
+        return [...BUILDING_GREY, 235] as [number, number, number, number]
+      const tNorm = (tC - tempRange.min) / (tempRange.max - tempRange.min || 1)
+      return [...ylOrRd(tNorm), 245] as [number, number, number, number]
+    }
+    return ocra
+  }
   return new GeoJsonLayer({
     id: 'buildings-shadow',
     data: dataUrl,
     stroked: true,
     filled: true,
     extruded: true,
-    getElevation: (f: BuildingTempFeature) => {
+    getElevation: (f: BuildingFeature) => {
       const h = f.properties?.height
       return typeof h === 'number' && h > 0 ? h : DEFAULT_BUILDING_HEIGHT
     },
-    getFillColor,
-    getLineColor: withAlpha(BOLOGNA_SANGIOVESE, 255),
+    getFillColor: (f: BuildingFeature) =>
+      withFade(baseColor(f), fadeFactor(f, fade)),
+    getLineColor: (f: BuildingFeature) =>
+      withFade(lineBase, fadeFactor(f, fade)),
     lineWidthMinPixels: 0.5,
     pickable: false,
     updateTriggers: {
-      getFillColor: [tempRange?.min, tempRange?.max],
+      getFillColor: [
+        tempRange?.min,
+        tempRange?.max,
+        fade?.lon,
+        fade?.lat,
+        fade?.near,
+        fade?.far,
+      ],
+      getLineColor: [fade?.lon, fade?.lat, fade?.near, fade?.far],
     },
     material: {
       ambient: 0.4,
@@ -648,10 +755,13 @@ type RoofFC = {
 function elevateRoofs(fc: RoofFC): RoofFC {
   for (const f of fc.features) {
     const h = f.properties?.height
-    const z =
+    const height =
       (typeof h === 'number' && h > 0 ? h : DEFAULT_BUILDING_HEIGHT) + 0.3
     const g = f.geometry
-    const lift = (ring: number[][]) => ring.map((c) => [c[0], c[1], z])
+    // c[2] = quota di base del terreno cotta nell'impronta (0 se assente):
+    // il tetto va a base + altezza, cosi' segue il terreno come l'estrusione.
+    const lift = (ring: number[][]) =>
+      ring.map((c) => [c[0], c[1], (c[2] ?? 0) + height])
     if (g.type === 'Polygon') {
       g.coordinates = (g.coordinates as number[][][]).map(lift)
     } else if (g.type === 'MultiPolygon') {
@@ -662,8 +772,13 @@ function elevateRoofs(fc: RoofFC): RoofFC {
   }
   return fc
 }
-function buildRoofLayer(visible: boolean, dataUrl: string): GeoJsonLayer | null {
+function buildRoofLayer(
+  visible: boolean,
+  dataUrl: string,
+  fade: FadeCfg | null,
+): GeoJsonLayer | null {
   if (!visible) return null
+  const red = withAlpha(BOLOGNA_RED, 255) as [number, number, number, number]
   return new GeoJsonLayer({
     id: 'buildings-roof',
     data: dataUrl,
@@ -672,10 +787,14 @@ function buildRoofLayer(visible: boolean, dataUrl: string): GeoJsonLayer | null 
     stroked: false,
     filled: true,
     extruded: false,
-    getFillColor: withAlpha(BOLOGNA_RED, 255),
+    // Stessa dissolvenza delle facciate cosi' i tetti spariscono in sincrono.
+    getFillColor: (f: Centroidable) => withFade(red, fadeFactor(f, fade)),
     pickable: false,
     // Tetti piatti: niente ombra propria -> fuori dallo shadow pass.
     shadowEnabled: false,
+    updateTriggers: {
+      getFillColor: [fade?.lon, fade?.lat, fade?.near, fade?.far],
+    },
     material: {
       ambient: 0.45,
       diffuse: 0.85,
@@ -808,22 +927,20 @@ function buildSelectedTreeLayer(
   })
 }
 
-// Segnaposto del punto cliccato: icona INFO (cerchio rosso Bologna con bordo
-// bianco e "i" bianca), NON un pin da mappa. Drop-shadow per staccare da
-// QUALSIASI basemap (satellite, ortofoto, dark). E' un elemento DOM custom,
-// distinto dalla goccia ciano usata per i risultati di ricerca. Essendo un
-// cerchio simmetrico va centrato sul punto: abbinare ad anchor 'center'.
+// Segnaposto del punto cliccato: un PIN classico a goccia (rosso Bologna, bordo
+// bianco, puntino bianco centrale). La punta in basso indica il punto esatto:
+// va abbinato ad anchor 'bottom'. Distinto dalla goccia BLU dei risultati di
+// ricerca grazie al colore. Drop-shadow per staccarlo da QUALSIASI basemap.
 function makeProbeInfoElement(): HTMLDivElement {
   const el = document.createElement('div')
-  el.style.width = '30px'
-  el.style.height = '30px'
+  el.style.width = '26px'
+  el.style.height = '34px'
   el.style.cursor = 'pointer'
-  el.style.filter = 'drop-shadow(0 2px 3px rgba(0,0,0,0.5))'
+  el.style.filter = 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))'
   el.innerHTML =
-    '<svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
-    `<circle cx="12" cy="12" r="10.5" fill="${toCss(BOLOGNA_RED)}" stroke="#ffffff" stroke-width="2"/>` +
-    '<circle cx="12" cy="7" r="1.7" fill="#ffffff"/>' +
-    '<rect x="10.6" y="10.2" width="2.8" height="7.6" rx="1.3" fill="#ffffff"/>' +
+    '<svg width="26" height="34" viewBox="0 0 26 34" xmlns="http://www.w3.org/2000/svg">' +
+    `<path d="M13 1 C6.4 1 1 6.4 1 13 C1 21.5 13 33 13 33 C13 33 25 21.5 25 13 C25 6.4 19.6 1 13 1 Z" fill="${toCss(BOLOGNA_RED)}" stroke="#ffffff" stroke-width="2"/>` +
+    '<circle cx="13" cy="13" r="4.6" fill="#ffffff"/>' +
     '</svg>'
   return el
 }
@@ -925,6 +1042,17 @@ function whitenMapLabels(map: maplibregl.Map): void {
   const style = map.getStyle()
   for (const l of style?.layers ?? []) {
     if (l.type !== 'symbol') continue
+    // I numeri civici del basemap (CartoDB dark-matter) galleggiano sui palazzi
+    // 3D come "numerini" sparsi: li nascondo del tutto invece di sbiancarli.
+    const srcLayer = (l as { 'source-layer'?: string })['source-layer']
+    if (/housenum/i.test(l.id) || /housenum/i.test(srcLayer ?? '')) {
+      try {
+        map.setLayoutProperty(l.id, 'visibility', 'none')
+      } catch {
+        // niente da nascondere
+      }
+      continue
+    }
     try {
       map.setPaintProperty(l.id, 'text-color', '#ffffff')
       map.setPaintProperty(l.id, 'text-halo-color', 'rgba(0,0,0,0.85)')
@@ -974,7 +1102,6 @@ export default function MapViewer({ lang }: MapViewerProps) {
     () => buildTreesLayers(treesVisible, trees),
     [treesVisible, trees],
   )
-  const [tempRecords, setTempRecords] = useState<TempRecord[] | null>(null)
   const [probe, setProbe] = useState<{ lat: number; lon: number } | null>(null)
   // Albero cliccato (picking deck.gl): mostra un popup con le sue info.
   const [selectedTree, setSelectedTree] = useState<{
@@ -1006,7 +1133,6 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // ai dB della strada sotto al cursore).
   const noiseTipRef = useRef<maplibregl.Popup | null>(null)
   const audioRef = useRef<{ ctx: AudioContext; gain: GainNode } | null>(null)
-  const [tempLookup, setTempLookup] = useState<TempLookup | null>(null)
   const [buildingsUrl, setBuildingsUrl] = useState<string>(
     BUILDINGS_FOOTPRINT_URL,
   )
@@ -1027,10 +1153,23 @@ export default function MapViewer({ lang }: MapViewerProps) {
       ) as Record<CategoryKey, boolean>,
   )
   const [bearing, setBearing] = useState(-20)
+  // Centro vista per la dissolvenza degli edifici lontani: aggiornato a
+  // 'moveend' (non a ogni frame). Vedi BUILDINGS_FADE_*.
+  const [fadeCenter, setFadeCenter] = useState<{ lon: number; lat: number } | null>(
+    null,
+  )
   const [search, setSearch] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null)
+  // Vista pulita: nasconde tutti i pannelli/filtri per uno screenshot o una
+  // vista 3D senza ingombri. Lo screenshot cattura comunque solo le canvas
+  // (mappa + deck), mai il DOM dei pannelli.
+  const [uiHidden, setUiHidden] = useState(false)
+  // Pannello meteo (widget 3BMeteo). Si nasconde anche in vista pulita.
+  const [meteoOpen, setMeteoOpen] = useState(false)
+  // Toast "link copiato" dopo il fallback di condivisione su desktop.
+  const [shareToast, setShareToast] = useState(false)
   const [quartieri, setQuartieri] = useState<QuartiereFeature[] | null>(null)
   const [selectedQuartiere, setSelectedQuartiere] = useState<number | null>(
     null,
@@ -1061,7 +1200,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       return r.json() as Promise<{
         features: {
-          geometry: { coordinates: [number, number] }
+          geometry: { coordinates: [number, number] | [number, number, number] }
           properties?: TreeProps | null
         }[]
       }>
@@ -1070,11 +1209,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
       .catch(() => tryFetch(TREES_DBTR_URL))
       .then((fc) => {
         setTrees(
-          fc.features.map((f) => ({
-            position: f.geometry.coordinates,
-            seed: hashSeed(f.geometry.coordinates[0], f.geometry.coordinates[1]),
-            props: f.properties ?? {},
-          })),
+          fc.features.map((f) => {
+            const [lon, lat, z] = f.geometry.coordinates
+            return {
+              position: [lon, lat, z ?? 0] as [number, number, number],
+              seed: hashSeed(lon, lat),
+              props: f.properties ?? {},
+            }
+          }),
         )
       })
       .catch(() => {
@@ -1082,17 +1224,6 @@ export default function MapViewer({ lang }: MapViewerProps) {
         treesRequestedRef.current = false
       })
   }, [visibility])
-
-  // Carica la serie temperatura una volta sola.
-  useEffect(() => {
-    let cancelled = false
-    loadTemperatureSeries().then((records) => {
-      if (!cancelled) setTempRecords(records)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   // Probe asset processati (altezze edifici da DSM, overlay vento). Se i file
   // non esistono ancora -- l'utente non ha lanciato gli script di build --
@@ -1255,8 +1386,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
       const [lon, lat] = s.geometry.coordinates
       const el = document.createElement('div')
       el.style.cssText =
-        'width:15px;height:15px;border-radius:50%;background:#22d3ee;' +
-        'border:2px solid #0e7490;box-shadow:0 0 8px 3px rgba(34,211,238,.45);' +
+        'width:15px;height:15px;border-radius:50%;background:#1272b7;' +
+        'border:2px solid #0a4d7a;box-shadow:0 0 8px 3px rgba(18,114,183,.45);' +
         'cursor:pointer'
       const p = s.properties
       const row = (v: number | null | undefined, label: string) =>
@@ -1311,15 +1442,6 @@ export default function MapViewer({ lang }: MapViewerProps) {
     }
   }, [])
 
-  // Aggiorna la lookup temperatura quando cambia il punto cliccato o la data.
-  useEffect(() => {
-    if (!probe || !tempRecords) {
-      setTempLookup(null)
-      return
-    }
-    setTempLookup(lookupTemperature(tempRecords, currentTime))
-  }, [probe, tempRecords, currentTime])
-
   // Segnaposto del punto cliccato: un'icona INFO rossa sul punto selezionato.
   // Si sposta al click successivo e sparisce alla chiusura dell'InfoPanel
   // (probe -> null).
@@ -1332,12 +1454,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
       return
     }
     if (!probeMarkerRef.current) {
-      // Icona info custom (vedi makeProbeInfoElement): alto contrasto su ogni
-      // basemap e distinta dalla goccia ciano della ricerca. anchor 'center'
-      // => il cerchio info e' centrato sul punto cliccato.
+      // Pin custom a goccia (vedi makeProbeInfoElement): alto contrasto su ogni
+      // basemap, distinto dalla goccia blu della ricerca. anchor 'bottom' => la
+      // punta del pin tocca esattamente il punto cliccato.
       const marker = new maplibregl.Marker({
         element: makeProbeInfoElement(),
-        anchor: 'center',
+        anchor: 'bottom',
       })
         .setLngLat([probe.lon, probe.lat])
         .addTo(map)
@@ -1407,8 +1529,15 @@ export default function MapViewer({ lang }: MapViewerProps) {
       maxPitch: 75,
       dragRotate: true,
       pitchWithRotate: true,
+      // Necessario per lo screenshot: senza, drawImage della canvas MapLibre
+      // restituisce un frame vuoto (il buffer viene azzerato dopo il
+      // compositing). La canvas deck.gl preserva gia' il buffer di default.
+      // In maplibre-gl v5 l'opzione vive in canvasContextAttributes.
+      canvasContextAttributes: { preserveDrawingBuffer: true },
+      // Esteso a sud (44.42) per inquadrare i colli: il terreno 3D e i dati
+      // arrivano fin la' (quote fino a ~365 m).
       maxBounds: [
-        [11.25, 44.45],
+        [11.25, 44.42],
         [11.45, 44.55],
       ],
     })
@@ -1590,6 +1719,24 @@ export default function MapViewer({ lang }: MapViewerProps) {
       // Stazioni qualita' aria: NON sono piu' layer MapLibre (verrebbero
       // occluse dagli edifici 3D deck.gl, che disegnano sopra tutto). Sono
       // marker DOM (vedi effect dedicato), sempre in primo piano.
+
+      // Terreno 3D. setStyle azzera sia il terrain sia il source, quindi li
+      // ri-creiamo qui ad ogni ricarica stile. Gli edifici/alberi deck.gl
+      // hanno la quota di base cotta nelle coordinate, quindi poggiano su
+      // questa superficie (vedi scripts/bake_terrain_elevation.py).
+      if (!map.getSource('terrain-dem')) {
+        map.addSource('terrain-dem', {
+          type: 'raster-dem',
+          tiles: [TERRAIN_TILES_URL],
+          encoding: 'terrarium',
+          tileSize: 256,
+          minzoom: TERRAIN_MINZOOM,
+          maxzoom: TERRAIN_MAXZOOM,
+          attribution:
+            'Quote: Terrain Tiles (Mapzen / AWS Open Data)',
+        })
+      }
+      map.setTerrain({ source: 'terrain-dem', exaggeration: TERRAIN_EXAGGERATION })
     }
 
     // Lo stile dark-matter (CartoCDN) ha background nero: sui bordi dei
@@ -1635,6 +1782,15 @@ export default function MapViewer({ lang }: MapViewerProps) {
       map.addControl(overlay as unknown as maplibregl.IControl)
       overlayRef.current = overlay
       map.once('idle', () => setOverlayReady(true))
+
+      // Centro vista per la dissolvenza edifici: iniziale + a ogni 'moveend'
+      // (a fine spostamento, non per-frame). Ricolora i layer edifici/tetti.
+      const updateFadeCenter = () => {
+        const c = map.getCenter()
+        setFadeCenter({ lon: c.lng, lat: c.lat })
+      }
+      updateFadeCenter()
+      map.on('moveend', updateFadeCenter)
 
       const sun0 = getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0])
       map.setLight(toMapLibreLight(sun0))
@@ -1885,6 +2041,15 @@ export default function MapViewer({ lang }: MapViewerProps) {
         if (lightingRef.current) {
           applyLighting(lightingRef.current, currentTime.getTime(), castShadows)
         }
+        // Dissolvenza edifici lontani (null finche' non conosco il centro vista).
+        const fade: FadeCfg | null = fadeCenter
+          ? {
+              lon: fadeCenter.lon,
+              lat: fadeCenter.lat,
+              near: BUILDINGS_FADE_NEAR_M,
+              far: BUILDINGS_FADE_FAR_M,
+            }
+          : null
         overlay.setProps({
           // Stessa istanza persistente: deck fa deepEqual e non la sostituisce
           // (le mutazioni sopra sono gia' attive); se invece il deck e' stato
@@ -1898,12 +2063,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
               visibility['buildings-3d'] || visibility['buildings-temp'],
               buildingsUrl,
               tempRange,
+              fade,
             ),
             // Tetti rosso mattone: solo col 3D acceso e NON in modalita'
             // temperatura (li' i tetti rossi coprirebbero la scala cromatica).
             buildRoofLayer(
               visibility['buildings-3d'] && !visibility['buildings-temp'],
               buildingsUrl,
+              fade,
             ),
             ...treeLayers,
             buildSelectedTreeLayer(selectedTree),
@@ -1928,9 +2095,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
     flashFading,
     overlayReady,
     buildingsUrl,
-    tempRecords,
     currentTime,
     envimetOverlays,
+    fadeCenter,
   ])
 
   // Basemap switcher: setStyle distrugge i source/layer custom, quindi dopo
@@ -2107,7 +2274,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
     } else {
       map.flyTo({ center: [res.lon, res.lat], zoom: 16, duration: 1200 })
       searchMarkerRef.current?.remove()
-      searchMarkerRef.current = new maplibregl.Marker({ color: '#22d3ee' })
+      searchMarkerRef.current = new maplibregl.Marker({ color: '#1272b7' })
         .setLngLat([res.lon, res.lat])
         .addTo(map)
     }
@@ -2115,12 +2282,110 @@ export default function MapViewer({ lang }: MapViewerProps) {
     setSearch(res.label.split(',')[0])
   }
 
+  // Composita TUTTE le canvas dentro il container (MapLibre sotto + deck.gl
+  // sopra) su una canvas 2D e risolve un PNG blob. Cattura solo le canvas,
+  // quindi i pannelli/filtri (DOM) non ci finiscono mai: l'immagine e' sempre
+  // pulita. Forza un repaint e aspetta due frame per avere i buffer aggiornati.
+  // Riusato sia dallo screenshot (download) sia dalla condivisione social.
+  const composeSceneBlob = (): Promise<Blob | null> =>
+    new Promise((resolve) => {
+      const container = containerRef.current
+      const map = mapRef.current
+      if (!container || !map) return resolve(null)
+      map.triggerRepaint()
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const base = map.getCanvas()
+          const canvases = Array.from(
+            container.querySelectorAll('canvas'),
+          ) as HTMLCanvasElement[]
+          if (canvases.length === 0) return resolve(null)
+          const out = document.createElement('canvas')
+          out.width = base.width
+          out.height = base.height
+          const ctx = out.getContext('2d')
+          if (!ctx) return resolve(null)
+          for (const c of canvases) {
+            try {
+              ctx.drawImage(c, 0, 0, out.width, out.height)
+            } catch {
+              // canvas cross-origin/non leggibile: la salto
+            }
+          }
+          out.toBlob((blob) => resolve(blob), 'image/png')
+        }),
+      )
+    })
+
+  const screenshotName = () =>
+    `urbanscope-bologna-${new Date()
+      .toISOString()
+      .slice(0, 19)
+      .replace(/[:T]/g, '-')}.png`
+
+  const takeScreenshot = async () => {
+    const blob = await composeSceneBlob()
+    if (!blob) return
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = screenshotName()
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // Condivisione "social": preferisce il Web Share API con il FILE immagine
+  // (su mobile apre lo share sheet nativo -> Instagram/WhatsApp/...). Se il
+  // browser non sa condividere file, ripiega sulla condivisione dell'URL, e
+  // infine (desktop senza share API) scarica il PNG e copia il link.
+  const shareScene = async () => {
+    const blob = await composeSceneBlob()
+    if (!blob) return
+    const file = new File([blob], screenshotName(), { type: 'image/png' })
+    const text = t('shareText', lang)
+    const url = typeof window !== 'undefined' ? window.location.href : ''
+
+    const nav = navigator as Navigator & {
+      canShare?: (data?: ShareData) => boolean
+    }
+    if (nav.share && nav.canShare?.({ files: [file] })) {
+      try {
+        await nav.share({ title: text, text, files: [file] })
+        return
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError') return // l'utente ha annullato
+      }
+    }
+    if (nav.share) {
+      try {
+        await nav.share({ title: text, text, url })
+        return
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError') return
+      }
+    }
+    // Fallback desktop: scarica l'immagine (da postare a mano) + copia il link.
+    const objUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objUrl
+    a.download = screenshotName()
+    a.click()
+    URL.revokeObjectURL(objUrl)
+    try {
+      await navigator.clipboard?.writeText(url)
+      setShareToast(true)
+      window.setTimeout(() => setShareToast(false), 2000)
+    } catch {
+      // clipboard non disponibile (http, permessi): l'immagine e' comunque scaricata
+    }
+  }
+
   return (
     <div className="relative w-full h-full">
       {loading && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gray-950 gap-4">
-          <div className="w-10 h-10 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-          <p className="text-cyan-400 tracking-widest text-sm font-mono uppercase">
+          <div className="w-10 h-10 border-2 border-talea-400 border-t-transparent rounded-full animate-spin" />
+          <p className="text-talea-400 tracking-widest text-sm font-mono uppercase">
             {t('loading', lang)}
           </p>
         </div>
@@ -2139,13 +2404,16 @@ export default function MapViewer({ lang }: MapViewerProps) {
         }}
       />
 
+      {/* Tutti i pannelli/filtri: nascosti in "vista pulita" (uiHidden). */}
+      {!uiHidden && (
+        <>
       {/* Search bar sticky, sempre visibile in alto */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 w-[min(420px,80vw)]">
         <form
           onSubmit={runSearch}
-          className="flex items-center gap-2 bg-gray-900/90 border border-cyan-400/30 rounded px-3 py-2 backdrop-blur-sm shadow-xl"
+          className="flex items-center gap-2 bg-gray-900/90 border border-talea-400/30 rounded px-3 py-2 backdrop-blur-sm shadow-xl"
         >
-          <span className="text-cyan-400/70 text-sm">⌕</span>
+          <span className="text-talea-400/70 text-sm">⌕</span>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -2161,7 +2429,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 searchMarkerRef.current?.remove()
                 searchMarkerRef.current = null
               }}
-              className="text-gray-500 hover:text-cyan-300 text-sm"
+              className="text-gray-500 hover:text-talea-300 text-sm"
               aria-label={t('clearSearch', lang)}
             >
               ✕
@@ -2170,21 +2438,21 @@ export default function MapViewer({ lang }: MapViewerProps) {
           <button
             type="submit"
             disabled={searching}
-            className="text-cyan-300 hover:text-cyan-200 text-xs font-mono uppercase tracking-wider disabled:text-gray-600"
+            className="text-talea-300 hover:text-talea-200 text-xs font-mono uppercase tracking-wider disabled:text-gray-600"
           >
             {searching ? '...' : t('go', lang)}
           </button>
         </form>
         {searchResults.length > 0 && (
-          <ul className="mt-1 bg-gray-900/95 border border-cyan-400/30 rounded backdrop-blur-sm shadow-xl overflow-hidden">
+          <ul className="mt-1 bg-gray-900/95 border border-talea-400/30 rounded backdrop-blur-sm shadow-xl overflow-hidden">
             {searchResults.map((res, i) => (
               <li key={i}>
                 <button
                   type="button"
                   onClick={() => gotoResult(res)}
-                  className={`w-full text-left px-3 py-2 text-xs hover:bg-cyan-400/10 hover:text-cyan-200 transition-colors border-b border-cyan-400/10 last:border-0 ${
+                  className={`w-full text-left px-3 py-2 text-xs hover:bg-talea-400/10 hover:text-talea-200 transition-colors border-b border-talea-400/10 last:border-0 ${
                     res.type === 'quartiere'
-                      ? 'text-cyan-300 font-mono'
+                      ? 'text-talea-300 font-mono'
                       : 'text-gray-200'
                   }`}
                 >
@@ -2196,7 +2464,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
           </ul>
         )}
         {selectedQuartiere != null && quartieri && (
-          <div className="mt-1 flex items-center justify-between bg-cyan-400/15 border border-cyan-400/40 rounded px-3 py-1.5 text-xs font-mono text-cyan-200 backdrop-blur-sm">
+          <div className="mt-1 flex items-center justify-between bg-talea-400/15 border border-talea-400/40 rounded px-3 py-1.5 text-xs font-mono text-talea-200 backdrop-blur-sm">
             <span>
               ▣ {t('quartierePrefix', lang)}:{' '}
               <b>
@@ -2210,7 +2478,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
             <button
               type="button"
               onClick={() => setSelectedQuartiere(null)}
-              className="text-cyan-300 hover:text-cyan-100 ml-2"
+              className="text-talea-300 hover:text-talea-100 ml-2"
               aria-label={t('deselectQuartiere', lang)}
             >
               ✕
@@ -2226,7 +2494,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
         type="button"
         onClick={resetNorth}
         title={t('resetNorth', lang)}
-        className="absolute top-4 right-2 sm:right-4 z-10 w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-gray-900/85 border border-cyan-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center hover:border-cyan-400/60 transition-colors"
+        className="absolute top-4 right-2 sm:right-4 z-10 w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-gray-900/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center hover:border-talea-400/60 transition-colors"
       >
         <div
           className="relative w-12 h-12"
@@ -2257,7 +2525,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
           onClick={() => setZonePanelOpen((v) => !v)}
           title={zonePanelOpen ? t('hideZones', lang) : t('showZones', lang)}
           style={{ left: 'calc(50% + min(210px, 40vw) + 0.5rem)' }}
-          className="absolute top-4 z-20 px-2.5 py-2 rounded bg-gray-900/90 border border-cyan-400/30 backdrop-blur-sm shadow-xl text-cyan-300 hover:text-cyan-100 hover:border-cyan-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
+          className="absolute top-4 z-20 px-2.5 py-2 rounded bg-gray-900/90 border border-talea-400/30 backdrop-blur-sm shadow-xl text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
           aria-label="Toggle zone panel"
         >
           <span
@@ -2276,13 +2544,13 @@ export default function MapViewer({ lang }: MapViewerProps) {
       {quartieri && zonePanelOpen && (
         <div
           style={{ left: 'calc(50% + min(210px, 40vw) + 0.5rem)' }}
-          className="absolute top-16 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl max-w-[60vw] sm:max-w-[200px]"
+          className="absolute top-16 z-10 bg-gray-900/85 border border-talea-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl max-w-[60vw] sm:max-w-[200px]"
         >
           <div className="flex flex-col gap-1">
             {/* Voce "Bologna": inquadra l'intera citta' (unione dei quartieri). */}
             <button
               onClick={jumpToCity}
-              className="text-left text-xs font-mono px-2 py-1 rounded transition-colors truncate text-cyan-300 font-bold hover:text-cyan-100 hover:bg-cyan-400/10 border-b border-cyan-400/20 mb-0.5"
+              className="text-left text-xs font-mono px-2 py-1 rounded transition-colors truncate text-talea-300 font-bold hover:text-talea-100 hover:bg-talea-400/10 border-b border-talea-400/20 mb-0.5"
               title="Bologna (intera città)"
             >
               ▣ Bologna
@@ -2291,7 +2559,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
               <button
                 key={f.properties.cod_quar}
                 onClick={() => jumpToQuartiere(f)}
-                className="text-left text-xs font-mono px-2 py-1 rounded transition-colors truncate text-gray-300 hover:text-cyan-300 hover:bg-cyan-400/10 border border-transparent"
+                className="text-left text-xs font-mono px-2 py-1 rounded transition-colors truncate text-gray-300 hover:text-talea-300 hover:bg-talea-400/10 border border-transparent"
                 title={f.properties.quartiere}
               >
                 {f.properties.quartiere}
@@ -2308,7 +2576,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
         type="button"
         onClick={() => setLayerPanelOpen((v) => !v)}
         title={layerPanelOpen ? t('hideLayers', lang) : t('showLayers', lang)}
-        className="absolute top-20 left-2 sm:left-4 z-20 px-2.5 py-1.5 rounded bg-gray-900/85 border border-cyan-400/30 backdrop-blur-sm shadow-xl text-cyan-300 hover:text-cyan-100 hover:border-cyan-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
+        className="absolute top-20 left-2 sm:left-4 z-20 px-2.5 py-1.5 rounded bg-gray-900/85 border border-talea-400/30 backdrop-blur-sm shadow-xl text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
         aria-label="Toggle layer panel"
       >
         <span
@@ -2323,7 +2591,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
       </button>
 
       <div
-        className={`absolute top-32 sm:top-32 left-2 sm:left-4 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl ${
+        className={`absolute top-32 sm:top-32 left-2 sm:left-4 z-10 bg-gray-900/85 border border-talea-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl ${
           layerPanelOpen ? '' : 'hidden'
         }`}
       >
@@ -2334,16 +2602,16 @@ export default function MapViewer({ lang }: MapViewerProps) {
             const isCollapsed = collapsed[cat.key]
             const activeCount = items.filter((l) => visibility[l.id]).length
             return (
-              <div key={cat.key} className="border-b border-cyan-400/10 last:border-0 pb-1 mb-0.5">
+              <div key={cat.key} className="border-b border-talea-400/10 last:border-0 pb-1 mb-0.5">
                 <button
                   type="button"
                   onClick={() =>
                     setCollapsed((c) => ({ ...c, [cat.key]: !c[cat.key] }))
                   }
-                  className="w-full flex items-center justify-between text-left text-[11px] font-mono uppercase tracking-wider text-cyan-300/90 hover:text-cyan-200 py-1"
+                  className="w-full flex items-center justify-between text-left text-[11px] font-mono uppercase tracking-wider text-talea-300/90 hover:text-talea-200 py-1"
                 >
                   <span className="flex items-center gap-1.5">
-                    <span className="text-cyan-400/70 w-3 inline-block">
+                    <span className="text-talea-400/70 w-3 inline-block">
                       {isCollapsed ? '▸' : '▾'}
                     </span>
                     {t(cat.labelKey, lang)}
@@ -2375,7 +2643,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                           className={`flex items-center gap-2 text-sm transition-colors ${
                             disabled
                               ? 'text-gray-500 cursor-not-allowed'
-                              : 'text-gray-200 cursor-pointer hover:text-cyan-300'
+                              : 'text-gray-200 cursor-pointer hover:text-talea-300'
                           }`}
                         >
                           <input
@@ -2388,7 +2656,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                                 [l.id]: e.target.checked,
                               }))
                             }
-                            className="accent-cyan-400 cursor-pointer disabled:cursor-not-allowed"
+                            className="accent-talea-400 cursor-pointer disabled:cursor-not-allowed"
                           />
                           <span>{label}</span>
                         </label>
@@ -2407,8 +2675,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
         </div>
       </div>
 
-      <div className="absolute bottom-24 right-2 sm:right-4 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl">
-        <div className="text-cyan-400 text-[10px] font-mono uppercase tracking-widest mb-1.5 px-1">
+      <div className="absolute bottom-24 right-2 sm:right-4 z-10 bg-gray-900/85 border border-talea-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl">
+        <div className="text-talea-400 text-[10px] font-mono uppercase tracking-widest mb-1.5 px-1">
           {t('basemap', lang)}
         </div>
         <div className="flex flex-col gap-1">
@@ -2418,8 +2686,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
               onClick={() => setBasemap(id)}
               className={`text-left text-xs font-mono px-2 py-1 rounded transition-colors ${
                 basemap === id
-                  ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/50'
-                  : 'text-gray-300 hover:text-cyan-300 hover:bg-cyan-400/10 border border-transparent'
+                  ? 'bg-talea-400/20 text-talea-300 border border-talea-400/50'
+                  : 'text-gray-300 hover:text-talea-300 hover:bg-talea-400/10 border border-transparent'
               }`}
             >
               {BASEMAPS[id].label}
@@ -2456,9 +2724,6 @@ export default function MapViewer({ lang }: MapViewerProps) {
               <InfoPanel
                 lat={probe.lat}
                 lon={probe.lon}
-                date={currentTime}
-                temp={tempLookup}
-                loading={!tempRecords}
                 windSpeed={pointWind}
                 envSamples={pointEnv}
                 lang={lang}
@@ -2466,8 +2731,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
               />
             )}
             {showLegend && (
-              <div className="bg-gray-900/85 border border-cyan-400/30 rounded p-2 backdrop-blur-sm shadow-xl">
-                <div className="text-cyan-400 text-[10px] font-mono uppercase tracking-widest mb-1.5 px-0.5">
+              <div className="bg-gray-900/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl">
+                <div className="text-talea-400 text-[10px] font-mono uppercase tracking-widest mb-1.5 px-0.5">
                   {t('legend', lang)}
                 </div>
                 <div className="flex flex-col gap-2">
@@ -2529,6 +2794,90 @@ export default function MapViewer({ lang }: MapViewerProps) {
           </div>
         )
       })()}
+        </>
+      )}
+
+      {/* Controlli sempre visibili (anche in vista pulita): in basso a sinistra.
+          Vista pulita nasconde i pannelli; screenshot scarica la scena 3D. */}
+      <div className="absolute bottom-4 left-2 sm:left-4 z-20 flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={() => setUiHidden((v) => !v)}
+          title={
+            uiHidden
+              ? t('showPanels', lang)
+              : t('hidePanels', lang)
+          }
+          aria-label={uiHidden ? t('showPanels', lang) : t('hidePanels', lang)}
+          className="w-10 h-10 rounded-full bg-gray-900/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors"
+        >
+          {uiHidden ? (
+            // occhio sbarrato = pannelli nascosti (clicca per mostrare)
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+              <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+              <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+              <line x1="2" y1="2" x2="22" y2="22" />
+            </svg>
+          ) : (
+            // occhio = pannelli visibili (clicca per nascondere)
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={takeScreenshot}
+          title={t('screenshot', lang)}
+          aria-label={t('screenshot', lang)}
+          className="w-10 h-10 rounded-full bg-gray-900/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-base"
+        >
+          📷
+        </button>
+        <button
+          type="button"
+          onClick={shareScene}
+          title={t('share', lang)}
+          aria-label={t('share', lang)}
+          className="w-10 h-10 rounded-full bg-gray-900/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="18" cy="5" r="3" />
+            <circle cx="6" cy="12" r="3" />
+            <circle cx="18" cy="19" r="3" />
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMeteoOpen((v) => !v)}
+          title={t('meteo', lang)}
+          aria-label={t('meteo', lang)}
+          aria-pressed={meteoOpen}
+          className={`w-10 h-10 rounded-full bg-gray-900/85 border backdrop-blur-sm shadow-xl flex items-center justify-center transition-colors text-base ${
+            meteoOpen
+              ? 'border-talea-400/60 text-talea-100'
+              : 'border-talea-400/30 text-talea-300 hover:text-talea-100 hover:border-talea-400/60'
+          }`}
+        >
+          ⛅
+        </button>
+      </div>
+
+      {/* Pannello meteo: widget 3BMeteo. Nascosto in vista pulita come gli altri. */}
+      {meteoOpen && !uiHidden && (
+        <MeteoWidget lang={lang} onClose={() => setMeteoOpen(false)} />
+      )}
+
+      {/* Toast "link copiato": fallback di condivisione su desktop senza share API. */}
+      {shareToast && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full bg-gray-900/90 border border-talea-400/40 backdrop-blur-sm shadow-xl text-sm text-talea-100">
+          {t('shareCopied', lang)}
+        </div>
+      )}
     </div>
   )
 }

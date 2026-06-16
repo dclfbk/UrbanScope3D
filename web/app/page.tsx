@@ -30,25 +30,25 @@ export default function Home() {
         </h1>
 
         <div className="flex items-center gap-4 w-64">
-          <div className="flex-1 h-px bg-cyan-400/60" />
-          <div className="w-2 h-2 rotate-45 bg-cyan-400" />
-          <div className="flex-1 h-px bg-cyan-400/60" />
+          <div className="flex-1 h-px bg-talea-400/60" />
+          <div className="w-2 h-2 rotate-45 bg-talea-400" />
+          <div className="flex-1 h-px bg-talea-400/60" />
         </div>
 
-        <p className="text-cyan-400/80 text-base uppercase" style={{ letterSpacing: '0.5em', fontFamily: 'monospace' }}>
+        <p className="text-talea-400/80 text-base uppercase" style={{ letterSpacing: '0.5em', fontFamily: 'monospace' }}>
           Exploring Urban Environments
         </p>
 
         <Link
           href="/explore"
-          className="group relative mt-3 px-12 py-4 border border-cyan-400/60 text-cyan-300 text-sm uppercase font-semibold cursor-pointer overflow-hidden transition-all duration-300 hover:text-black hover:border-cyan-300 active:scale-95"
+          className="group relative mt-3 px-12 py-4 border border-talea-400/60 text-talea-300 text-sm uppercase font-semibold cursor-pointer overflow-hidden transition-all duration-300 hover:text-black hover:border-talea-300 active:scale-95"
           style={{ fontFamily: 'monospace', letterSpacing: '0.4em' }}
         >
-          <span className="absolute inset-0 bg-cyan-400 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-in-out" />
-          <span className="absolute top-0 left-0 w-2 h-2 border-t border-l border-cyan-400" />
-          <span className="absolute top-0 right-0 w-2 h-2 border-t border-r border-cyan-400" />
-          <span className="absolute bottom-0 left-0 w-2 h-2 border-b border-l border-cyan-400" />
-          <span className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-cyan-400" />
+          <span className="absolute inset-0 bg-talea-400 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-in-out" />
+          <span className="absolute top-0 left-0 w-2 h-2 border-t border-l border-talea-400" />
+          <span className="absolute top-0 right-0 w-2 h-2 border-t border-r border-talea-400" />
+          <span className="absolute bottom-0 left-0 w-2 h-2 border-b border-l border-talea-400" />
+          <span className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-talea-400" />
           <span className="relative z-10">ESPLORA</span>
         </Link>
 

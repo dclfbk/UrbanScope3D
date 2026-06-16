@@ -46,16 +46,16 @@ export default function TimeSlider({ value, onChange, lat, lon, lang }: Props) {
   })
 
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 bg-gray-900/85 border border-cyan-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl w-[min(460px,calc(100vw-1rem))] sm:min-w-[460px]">
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 bg-gray-900/85 border border-talea-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl w-[min(460px,calc(100vw-1rem))] sm:min-w-[460px]">
       <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
-        <div className="text-cyan-400 text-[10px] sm:text-xs font-mono uppercase tracking-widest">
+        <div className="text-talea-400 text-[10px] sm:text-xs font-mono uppercase tracking-widest">
           {t('sun', lang)}
         </div>
         <input
           type="date"
           value={isoDate(value)}
           onChange={(e) => setDate(e.target.value)}
-          className="bg-gray-800 border border-cyan-400/30 text-cyan-300 text-[10px] sm:text-xs font-mono rounded px-1.5 sm:px-2 py-1 cursor-pointer"
+          className="bg-gray-800 border border-talea-400/30 text-talea-300 text-[10px] sm:text-xs font-mono rounded px-1.5 sm:px-2 py-1 cursor-pointer"
         />
         <div className="text-gray-200 text-[10px] sm:text-xs font-mono">{fmt}</div>
       </div>

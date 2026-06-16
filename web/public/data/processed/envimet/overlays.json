@@ -10,9 +10,10 @@
       "values": "/data/processed/envimet/temperature.values.json",
       "z_band": 2,
       "range": {
-        "min": 31.85,
-        "max": 34.81
+        "min": 24.0,
+        "max": 40.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 29.78,
         "max": 35.96
@@ -43,27 +44,27 @@
       ],
       "legend": [
         {
-          "value": 31.85,
+          "value": 24.0,
           "color": "#ffffb2"
         },
         {
-          "value": 32.44,
+          "value": 27.2,
           "color": "#fee182"
         },
         {
-          "value": 33.03,
+          "value": 30.4,
           "color": "#fec25d"
         },
         {
-          "value": 33.63,
+          "value": 33.6,
           "color": "#fea346"
         },
         {
-          "value": 34.22,
+          "value": 36.8,
           "color": "#f07138"
         },
         {
-          "value": 34.81,
+          "value": 40.0,
           "color": "#bd0026"
         }
       ]
@@ -76,9 +77,10 @@
       "values": "/data/processed/envimet/humidity.values.json",
       "z_band": 2,
       "range": {
-        "min": 36.23,
-        "max": 43.31
+        "min": 30.0,
+        "max": 70.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 34.58,
         "max": 47.23
@@ -109,27 +111,27 @@
       ],
       "legend": [
         {
-          "value": 36.23,
+          "value": 30.0,
           "color": "#f7fbff"
         },
         {
-          "value": 37.65,
+          "value": 38.0,
           "color": "#bfdcef"
         },
         {
-          "value": 39.07,
+          "value": 46.0,
           "color": "#87bdde"
         },
         {
-          "value": 40.48,
+          "value": 54.0,
           "color": "#5795c1"
         },
         {
-          "value": 41.9,
+          "value": 62.0,
           "color": "#306296"
         },
         {
-          "value": 43.31,
+          "value": 70.0,
           "color": "#08306b"
         }
       ]
@@ -143,8 +145,9 @@
       "z_band": "max-z",
       "range": {
         "min": 0.0,
-        "max": 0.3
+        "max": 0.5
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 0.0,
         "max": 0.3
@@ -179,23 +182,23 @@
           "color": "#f7fcf5"
         },
         {
-          "value": 0.06,
+          "value": 0.1,
           "color": "#c3e6c2"
         },
         {
-          "value": 0.12,
+          "value": 0.2,
           "color": "#8ecf8f"
         },
         {
-          "value": 0.18,
+          "value": 0.3,
           "color": "#5daa64"
         },
         {
-          "value": 0.24,
+          "value": 0.4,
           "color": "#2e773f"
         },
         {
-          "value": 0.3,
+          "value": 0.5,
           "color": "#00441b"
         }
       ]
@@ -209,8 +212,9 @@
       "z_band": 2,
       "range": {
         "min": 0.0,
-        "max": 987.6
+        "max": 1000.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 0.0,
         "max": 987.6
@@ -245,23 +249,23 @@
           "color": "#000004"
         },
         {
-          "value": 197.52,
+          "value": 200.0,
           "color": "#410e64"
         },
         {
-          "value": 395.04,
+          "value": 400.0,
           "color": "#8e287a"
         },
         {
-          "value": 592.56,
+          "value": 600.0,
           "color": "#d3586f"
         },
         {
-          "value": 790.08,
+          "value": 800.0,
           "color": "#fca074"
         },
         {
-          "value": 987.6,
+          "value": 1000.0,
           "color": "#fcfdbf"
         }
       ]
@@ -275,8 +279,9 @@
       "z_band": 2,
       "range": {
         "min": 0.0,
-        "max": 114.62
+        "max": 200.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 0.0,
         "max": 118.06
@@ -311,23 +316,23 @@
           "color": "#000004"
         },
         {
-          "value": 22.92,
+          "value": 40.0,
           "color": "#410e64"
         },
         {
-          "value": 45.85,
+          "value": 80.0,
           "color": "#8e287a"
         },
         {
-          "value": 68.77,
+          "value": 120.0,
           "color": "#d3586f"
         },
         {
-          "value": 91.7,
+          "value": 160.0,
           "color": "#fca074"
         },
         {
-          "value": 114.62,
+          "value": 200.0,
           "color": "#fcfdbf"
         }
       ]
@@ -340,9 +345,10 @@
       "values": "/data/processed/envimet/reflected_sw.values.json",
       "z_band": 2,
       "range": {
-        "min": 40.29,
-        "max": 342.01
+        "min": 0.0,
+        "max": 400.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 17.22,
         "max": 383.29
@@ -373,27 +379,27 @@
       ],
       "legend": [
         {
-          "value": 40.29,
+          "value": 0.0,
           "color": "#000004"
         },
         {
-          "value": 100.64,
+          "value": 80.0,
           "color": "#410e64"
         },
         {
-          "value": 160.98,
+          "value": 160.0,
           "color": "#8e287a"
         },
         {
-          "value": 221.32,
+          "value": 240.0,
           "color": "#d3586f"
         },
         {
-          "value": 281.66,
+          "value": 320.0,
           "color": "#fca074"
         },
         {
-          "value": 342.01,
+          "value": 400.0,
           "color": "#fcfdbf"
         }
       ]
@@ -406,9 +412,10 @@
       "values": "/data/processed/envimet/mean_radiant_temp.values.json",
       "z_band": 2,
       "range": {
-        "min": 33.55,
-        "max": 75.65
+        "min": 20.0,
+        "max": 80.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 26.1,
         "max": 80.44
@@ -439,27 +446,27 @@
       ],
       "legend": [
         {
-          "value": 33.55,
+          "value": 20.0,
           "color": "#ffffb2"
         },
         {
-          "value": 41.97,
+          "value": 32.0,
           "color": "#fee182"
         },
         {
-          "value": 50.39,
+          "value": 44.0,
           "color": "#fec25d"
         },
         {
-          "value": 58.81,
+          "value": 56.0,
           "color": "#fea346"
         },
         {
-          "value": 67.23,
+          "value": 68.0,
           "color": "#f07138"
         },
         {
-          "value": 75.65,
+          "value": 80.0,
           "color": "#bd0026"
         }
       ]
