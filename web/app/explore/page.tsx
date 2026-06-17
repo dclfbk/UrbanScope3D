@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Lang } from '@/lib/i18n'
 
 const MapViewer = dynamic(
@@ -12,6 +12,13 @@ const MapViewer = dynamic(
 
 export default function ExplorePage() {
   const [lang, setLang] = useState<Lang>('it')
+  // Lingua iniziale dalla preferenza del browser (l'utente puo' comunque
+  // cambiarla col toggle). Aggiornata dopo il mount per non rompere l'hydration.
+  useEffect(() => {
+    const nav =
+      navigator.language || (navigator.languages && navigator.languages[0])
+    setLang(nav?.toLowerCase().startsWith('it') ? 'it' : 'en')
+  }, [])
   return (
     <main className="w-full h-screen bg-gray-950 flex flex-col">
       <div className="relative flex items-center px-3 sm:px-6 py-2 sm:py-3 bg-gray-900 border-b border-talea-400/20 z-20">

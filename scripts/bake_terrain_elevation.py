@@ -158,6 +158,35 @@ def centroid_of(geom):
     return sx / len(ring), sy / len(ring)
 
 
+# Margine in metri di cui l'edificio si "incassa" sotto la quota minima
+# dell'impronta: cosi' la base non galleggia MAI (prima si campionava solo il
+# centroide e su terreno irregolare alcuni edifici risultavano sollevati).
+BUILDING_SINK_M = 1.0
+
+
+def min_base_elev(geom, dem: "Dem") -> float | None:
+    """Quota di base di un edificio = MINIMO del terreno sotto l'anello esterno
+    dell'impronta, meno BUILDING_SINK_M. Campionando tutti i vertici (non solo
+    il centroide) l'edificio poggia sul punto piu' basso e si incassa nel resto
+    del terreno invece di restare sospeso sul lato a valle."""
+    t = geom["type"]
+    if t == "Polygon":
+        rings = [geom["coordinates"][0]]
+    elif t == "MultiPolygon":
+        rings = [poly[0] for poly in geom["coordinates"]]
+    else:
+        return None
+    zmin = math.inf
+    for ring in rings:
+        for p in ring:
+            z = dem.sample(p[0], p[1])
+            if z < zmin:
+                zmin = z
+    if zmin is math.inf:
+        return None
+    return round(float(zmin) - BUILDING_SINK_M, 1)
+
+
 def set_z_polygon(coords, z):
     for ring in coords:
         for p in ring:
@@ -179,10 +208,9 @@ def bake_buildings(dem: Dem):
         g = ft.get("geometry")
         if not g:
             continue
-        c = centroid_of(g)
-        if c is None:
+        z = min_base_elev(g, dem)
+        if z is None:
             continue
-        z = round(float(dem.sample(*c)), 1)
         elevs.append(z)
         ft["properties"]["base_elev"] = z
         if g["type"] == "Polygon":

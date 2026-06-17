@@ -1,0 +1,1 @@
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,34900,t=>{"use strict";t.s(["withBase",0,function(t){return t.startsWith("/")?`/UrbanScope3D${t}`:t}])},76084,t=>{t.v(t=>Promise.resolve().then(()=>t(95002)))}]);

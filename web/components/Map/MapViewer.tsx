@@ -74,6 +74,10 @@ type EnvimetOverlay = {
   image: string
   values: string
   range: { min: number; max: number }
+  // Range EFFETTIVO dei dati (min/max osservati), piu' stretto del `range`
+  // fisso usato per il PNG: lo usiamo per colorare gli edifici cosi' la rampa
+  // si spalma sui valori reali e caldi/freddi si distinguono bene.
+  observed?: { min: number; max: number }
   bounds: { west: number; south: number; east: number; north: number }
   coordinates: [
     [number, number],
@@ -122,13 +126,15 @@ const LAYERS: {
   category: CategoryKey
 }[] = [
   { id: 'buildings-3d', labelKey: 'layer_buildings_3d', default: true, category: 'edifici' },
+  // Ombre: OFF di default; il toggle le accende. Con interleaved il cambio
+  // ricrea l'overlay deck (vedi effect "ricrea overlay al cambio ombre").
   { id: 'shadows', labelKey: 'layer_shadows', default: false, category: 'edifici' },
   { id: 'buildings-particellari', labelKey: 'layer_buildings_2d', default: false, category: 'edifici' },
   { id: 'buildings-temp', labelKey: 'layer_buildings_temp', default: false, category: 'edifici' },
-  { id: 'trees', labelKey: 'layer_trees', default: false, category: 'verde' },
-  { id: 'green-areas', labelKey: 'layer_green', default: false, category: 'verde' },
-  { id: 'parks', labelKey: 'layer_parks', default: false, category: 'verde' },
-  { id: 'private-green', labelKey: 'layer_private_green', default: false, category: 'verde' },
+  { id: 'trees', labelKey: 'layer_trees', default: true, category: 'verde' },
+  { id: 'green-areas', labelKey: 'layer_green', default: true, category: 'verde' },
+  { id: 'parks', labelKey: 'layer_parks', default: true, category: 'verde' },
+  { id: 'private-green', labelKey: 'layer_private_green', default: true, category: 'verde' },
   { id: 'air-stations', labelKey: 'layer_air', default: false, category: 'ambiente' },
   { id: 'wind', labelKey: 'layer_wind', default: false, category: 'ambiente' },
   { id: 'noise', labelKey: 'layer_noise', default: false, category: 'ambiente' },
@@ -176,7 +182,11 @@ const TERRAIN_TILES_URL = withBase('/data/processed/terrain/{z}/{x}/{y}.png')
 // edifici e tutto il maxBounds (verificato: lon 11.206-11.470 / lat 44.402-44.575).
 // NB: oltre quella copertura (orizzonte profondo a sud) il terreno torna piatto,
 // ma e' fuori dal maxBounds e comunque in zona dissolvenza edifici.
-const TERRAIN_MINZOOM = 14
+// Tile DEM presenti su disco dallo zoom 11 al 15. minzoom 11 = il terreno (e
+// quindi le colline a sud) resta attivo anche quando si zooma FUORI; prima era
+// 14 e sotto quel livello il DEM spariva -> mappa piatta. maxzoom 14 = oltre si
+// sovra-zooma il tile 14 (le basi di edifici/alberi sono cotte a z14).
+const TERRAIN_MINZOOM = 11
 const TERRAIN_MAXZOOM = 14
 const TERRAIN_EXAGGERATION = 1
 const LANDUSE_URL = withBase('/data/4)LandUse-GroundSurface/4.1_uso_suolo_2020_ed2023_aoi.geojson')
@@ -267,6 +277,10 @@ type WindOverlay = {
 
 const AOI_CENTER: [number, number] = [11.343720439501553, 44.49989258707834]
 const DEFAULT_BUILDING_HEIGHT = 15
+// Stacco verticale del tetto rosso sopra la cima dell'estrusione: piccolo, per
+// vincere il depth test (tetto sopra le facciate) senza gap visibile. Combinato
+// col depth-bias (polygon offset) sul layer tetti elimina lo sfarfallio.
+const ROOF_LIFT_M = 0.06
 
 // Albero stilizzato: tronco cilindrico + chioma. Due forme di chioma generate
 // proceduralmente (nessun asset esterno): coni sovrapposti per le conifere,
@@ -408,8 +422,53 @@ function parseHeightM(v: TreeProps[string]): number | null {
   const n = parseFloat(m[0])
   return Number.isFinite(n) && n >= 2 && n <= 120 ? n : null
 }
+// Altezza tipica (m) a maturita' in ambito urbano, per i generi piu' comuni a
+// Bologna. Chiave = genere latino minuscolo. Usata quando manca il tag OSM
+// `height` (quasi sempre: lo hanno ~58 alberi su 106k).
+const GENUS_HEIGHT_M: Record<string, number> = {
+  platanus: 25, // platano (i grandi viali)
+  populus: 25, // pioppo
+  cedrus: 22, // cedro
+  quercus: 20, // quercia
+  pinus: 18, // pino
+  tilia: 18, // tiglio
+  celtis: 18, // bagolaro
+  ulmus: 18, // olmo
+  ginkgo: 18,
+  fraxinus: 17, // frassino
+  robinia: 16,
+  cupressus: 16, // cipresso
+  aesculus: 16, // ippocastano
+  liquidambar: 16,
+  sophora: 16,
+  styphnolobium: 16, // sofora (nuovo nome di Sophora japonica)
+  acer: 14, // acero
+  betula: 14, // betulla
+  salix: 14, // salice
+  carpinus: 12, // carpino
+  catalpa: 12,
+  magnolia: 10,
+  morus: 10, // gelso
+  prunus: 8, // ciliegi/prunus ornamentali
+  lagerstroemia: 6, // lagerstroemia
+}
+// Genere latino: prima parola di genus / species / taxon, minuscola.
+function genusOf(props: TreeProps): string | null {
+  const raw = props['genus'] ?? props['species'] ?? props['taxon']
+  if (raw == null || raw === '') return null
+  return String(raw).trim().toLowerCase().split(/\s+/)[0] || null
+}
 function treeHeightM(d: TreePoint): number {
-  return parseHeightM(d.props.height) ?? 6 + d.seed * 7
+  // 1) altezza reale dal tag OSM se c'e'.
+  const real = parseHeightM(d.props.height)
+  if (real != null) return real
+  // 2) stima per genere (tipologia), variata ±18% per albero (seed) cosi' un
+  //    filare non e' un muro perfetto.
+  const genus = genusOf(d.props)
+  const base = genus ? GENUS_HEIGHT_M[genus] : undefined
+  if (base != null) return Math.round(base * (0.82 + d.seed * 0.36) * 10) / 10
+  // 3) fallback: conifere un filo piu' slanciate, resto come prima (6..13 m).
+  return treeKind(d) === 'conifer' ? 9 + d.seed * 8 : 6 + d.seed * 7
 }
 function trunkHeightOf(d: TreePoint): number {
   return Math.max(1.5, treeHeightM(d) * 0.28)
@@ -419,14 +478,16 @@ function trunkHeightOf(d: TreePoint): number {
 const SHADOW_ON: [number, number, number, number] = [0, 0, 0, 0.5]
 const SHADOW_OFF: [number, number, number, number] = [0, 0, 0, 0]
 
-// Sole + ambient per un dato istante. `_shadow` resta SEMPRE true (costante):
-// cambiarlo a runtime ricostruisce il modulo ombre e lascia il GeoJsonLayer
-// estruso con uno shader in cache privo del binding shadow_uShadowMapN ->
-// errore luma.gl + edifici/tetti spariti (di giorno togliendo le ombre, di
-// notte al tramonto). L'on/off dell'ombra si fa SOLO via shadowColor (alpha),
-// mutato sull'effetto persistente (vedi nota in applyLighting). Di notte: sole
-// a intensita' 0 e ambient alto cosi' gli edifici restano ben visibili.
-function sunAmbientFor(timestamp: number): {
+// Sole + ambient per un dato istante. `_shadow` segue il toggle "Ombre": NON va
+// cambiato a runtime sullo STESSO overlay (ricompila il modulo ombre e fa
+// sparire edifici/tetti) — per questo, quando il toggle cambia, RICREIAMO
+// l'intero overlay deck (vedi effect dedicato), cosi' gli shader nascono gia'
+// con/senza ombre. Qui _shadow resta coerente con come l'overlay e' stato
+// creato. Di notte: sole a intensita' 0 e ambient alto -> edifici ben visibili.
+function sunAmbientFor(
+  timestamp: number,
+  shadow: boolean,
+): {
   sun: SunLight
   ambient: AmbientLight
 } {
@@ -436,7 +497,7 @@ function sunAmbientFor(timestamp: number): {
     timestamp,
     color: [255, 255, 255],
     intensity: isDay ? 1.5 : 0,
-    _shadow: true,
+    _shadow: shadow,
   })
   const ambient = new AmbientLight({
     color: [255, 255, 255],
@@ -455,7 +516,9 @@ function applyLighting(
   timestamp: number,
   castShadows: boolean,
 ): void {
-  effect.setProps(sunAmbientFor(timestamp))
+  // _shadow coerente con castShadows: l'overlay e' stato creato con questo
+  // valore, quindi setProps non cambia il modulo (nessuna ricompilazione).
+  effect.setProps(sunAmbientFor(timestamp, castShadows))
   ;(effect as unknown as { shadowColor: number[] }).shadowColor = castShadows
     ? SHADOW_ON
     : SHADOW_OFF
@@ -615,8 +678,12 @@ const BUILDING_GREY: [number, number, number] = [120, 124, 130]
 // sparire, cosi' in vista bassa non restano "sospesi" all'orizzonte. Pieni
 // entro NEAR, invisibili oltre FAR, lineari in mezzo. Centro = map.getCenter()
 // aggiornato a 'moveend' (vedi fadeCenter nello stato).
-const BUILDINGS_FADE_NEAR_M = 1500
-const BUILDINGS_FADE_FAR_M = 3500
+// Foschia MOLTO leggera e lontana: tutte le case della citta' restano piene;
+// solo quelle davvero lontane (oltre NEAR) sfumano dolcemente verso l'orizzonte,
+// sparendo a FAR. Distanze alzate (prima 2.5/6 km, troppa nebbia) cosi' l'AOI e
+// i quartieri restano sempre nitidi e l'effetto e' appena un accenno all'orizzonte.
+const BUILDINGS_FADE_NEAR_M = 5000
+const BUILDINGS_FADE_FAR_M = 11000
 type FadeCfg = { lon: number; lat: number; near: number; far: number }
 
 // Solo le slot di cache del centroide (__cx/__cy): gli oggetti feature sono
@@ -683,6 +750,8 @@ function buildShadowBuildingsLayer(
   tempRange: { min: number; max: number } | null,
   // Dissolvenza per distanza (null = nessuna).
   fade: FadeCfg | null,
+  // Chiamata quando il GeoJSON edifici ha finito di caricare (per il loader).
+  onDataLoad?: () => void,
 ): GeoJsonLayer | null {
   if (!visible) return null
   const ocra = withAlpha(BOLOGNA_OCRA, 240) as [number, number, number, number]
@@ -705,6 +774,7 @@ function buildShadowBuildingsLayer(
   return new GeoJsonLayer({
     id: 'buildings-shadow',
     data: dataUrl,
+    onDataLoad: () => onDataLoad?.(),
     stroked: true,
     filled: true,
     extruded: true,
@@ -717,7 +787,9 @@ function buildShadowBuildingsLayer(
     getLineColor: (f: BuildingFeature) =>
       withFade(lineBase, fadeFactor(f, fade)),
     lineWidthMinPixels: 0.5,
-    pickable: false,
+    // Pickable: al click leggo air_temp dell'edificio (temperatura aria che lo
+    // colora) e la mostro nel pannello del punto.
+    pickable: true,
     updateTriggers: {
       getFillColor: [
         tempRange?.min,
@@ -741,8 +813,8 @@ function buildShadowBuildingsLayer(
 // Tetti "alla bolognese": rosso mattone dei coppi, distinti dalle facciate
 // ocra. deck.gl colora top+lati di un edificio estruso con UN solo colore,
 // quindi per avere il tetto di colore diverso si disegna un layer a parte: le
-// stesse impronte ELEVATE a z = altezza (+0.3 m per stare appena sopra la cima
-// dell'estrusione ed evitare z-fighting), come poligoni piatti.
+// stesse impronte ELEVATE a z = altezza (+ROOF_LIFT_M, stacco minimo per stare
+// appena sopra la cima dell'estrusione ed evitare z-fighting), poligoni piatti.
 type RoofFC = {
   features: {
     properties?: { height?: number } | null
@@ -752,25 +824,38 @@ type RoofFC = {
     }
   }[]
 }
+// IMPORTANTE: PURO, non muta l'input. deck.gl condivide il GeoJSON scaricato
+// tra layer con lo STESSO url (qui edifici estrusi e tetti). Se qui mutassimo
+// in-place le coordinate (come prima), solleveremmo la base ANCHE degli edifici
+// estrusi -> tutta la palazzina "vola". Quindi cloniamo features/geometry e
+// restituiamo una FC nuova, lasciando intatta quella degli edifici.
 function elevateRoofs(fc: RoofFC): RoofFC {
-  for (const f of fc.features) {
-    const h = f.properties?.height
-    const height =
-      (typeof h === 'number' && h > 0 ? h : DEFAULT_BUILDING_HEIGHT) + 0.3
-    const g = f.geometry
-    // c[2] = quota di base del terreno cotta nell'impronta (0 se assente):
-    // il tetto va a base + altezza, cosi' segue il terreno come l'estrusione.
-    const lift = (ring: number[][]) =>
-      ring.map((c) => [c[0], c[1], (c[2] ?? 0) + height])
-    if (g.type === 'Polygon') {
-      g.coordinates = (g.coordinates as number[][][]).map(lift)
-    } else if (g.type === 'MultiPolygon') {
-      g.coordinates = (g.coordinates as number[][][][]).map((poly) =>
-        poly.map(lift),
-      )
-    }
+  return {
+    ...fc,
+    features: fc.features.map((f) => {
+      const h = f.properties?.height
+      // +ROOF_LIFT_M: stacco MINIMO sopra la cima dell'estrusione. Prima era
+      // 0.3 m = un gap costante visibile (tetti "rialzati tutti uguale"). Ora
+      // 0.03 m: il rosso resta appena sopra il cappello ocra (vince il depth
+      // test, niente z-fighting) ma il distacco e' impercettibile -> tetto
+      // "attaccato".
+      const height =
+        (typeof h === 'number' && h > 0 ? h : DEFAULT_BUILDING_HEIGHT) +
+        ROOF_LIFT_M
+      const g = f.geometry
+      // c[2] = quota di base del terreno cotta nell'impronta (0 se assente):
+      // il tetto va a base + altezza, cosi' segue il terreno come l'estrusione.
+      const lift = (ring: number[][]) =>
+        ring.map((c) => [c[0], c[1], (c[2] ?? 0) + height])
+      const coordinates =
+        g.type === 'Polygon'
+          ? (g.coordinates as number[][][]).map(lift)
+          : g.type === 'MultiPolygon'
+            ? (g.coordinates as number[][][][]).map((poly) => poly.map(lift))
+            : g.coordinates
+      return { ...f, geometry: { ...g, coordinates } }
+    }),
   }
-  return fc
 }
 function buildRoofLayer(
   visible: boolean,
@@ -781,12 +866,27 @@ function buildRoofLayer(
   const red = withAlpha(BOLOGNA_RED, 255) as [number, number, number, number]
   return new GeoJsonLayer({
     id: 'buildings-roof',
-    data: dataUrl,
+    // Dato ISOLATO: stesso file ma URL distinto (il frammento #roofs viene
+    // ignorato dal server). Cosi' deck.gl carica una copia SEPARATA per i tetti
+    // e il nostro dataTransform non puo' MAI toccare la geometria condivisa
+    // degli edifici estrusi (che altrimenti si solleverebbero -> palazzi che
+    // volano). Questo elimina alla radice la condivisione dati tra i due layer.
+    data: dataUrl + '#roofs',
     // @ts-expect-error dataTransform restituisce la nostra FC elevata
     dataTransform: (d: unknown) => elevateRoofs(d as RoofFC),
     stroked: false,
     filled: true,
     extruded: false,
+    // DEPTH-BIAS (polygon offset): il tetto e' quasi complanare al "cappello"
+    // ocra in cima all'estrusione; a grande distanza, col terreno che dilata il
+    // range di profondita', 0.03 m non bastano e i pixel sfarfallano (z-fighting).
+    // depthBias/SlopeScale negativi (forti) spostano il tetto PIU' VICINO nel
+    // depth buffer -> vince sempre il confronto col "cappello" ocra, niente
+    // sfarfallio, senza alzarlo visibilmente. (luma.gl: gl.polygonOffset +
+    // POLYGON_OFFSET_FILL.) Lo sfarfallio si vede solo di giorno perche' il
+    // contrasto rosso/ocra lo rende evidente (di notte i due sono entrambi
+    // scuri), ma la causa e' geometrica, non la luce.
+    parameters: { depthBias: -8, depthBiasSlopeScale: -8 },
     // Stessa dissolvenza delle facciate cosi' i tetti spariscono in sincrono.
     getFillColor: (f: Centroidable) => withFade(red, fadeFactor(f, fade)),
     pickable: false,
@@ -900,20 +1000,22 @@ function buildTreesLayers(
   return layers
 }
 
-// Cerchio di evidenziazione attorno all'albero selezionato: un anello ciano
-// (colore brand) sul terreno alla base dell'albero. depthTest off cosi' resta
-// sempre visibile, non occluso dalla chioma o dagli edifici.
+// Cerchio di evidenziazione attorno all'albero selezionato: un anello blu
+// (brand Talea #1272B7) sul terreno alla base dell'albero. depthTest off cosi'
+// resta sempre visibile, non occluso dalla chioma o dagli edifici.
 function buildSelectedTreeLayer(
-  sel: { lon: number; lat: number } | null,
+  sel: { lon: number; lat: number; z: number } | null,
 ): Layer | null {
   if (!sel) return null
-  return new ScatterplotLayer<{ lon: number; lat: number }>({
+  return new ScatterplotLayer<{ lon: number; lat: number; z: number }>({
     id: 'tree-selected-ring',
     data: [sel],
-    getPosition: (d) => [d.lon, d.lat],
+    // z = quota di base dell'albero (terreno): l'anello sta ALLA BASE
+    // dell'albero, non a z=0 (dove prima finiva "sotto" l'albero).
+    getPosition: (d) => [d.lon, d.lat, d.z],
     stroked: true,
     filled: false,
-    getLineColor: [34, 211, 238, 255],
+    getLineColor: [18, 114, 183, 255],
     getRadius: 3.5,
     radiusUnits: 'meters',
     radiusMinPixels: 13,
@@ -927,20 +1029,24 @@ function buildSelectedTreeLayer(
   })
 }
 
-// Segnaposto del punto cliccato: un PIN classico a goccia (rosso Bologna, bordo
-// bianco, puntino bianco centrale). La punta in basso indica il punto esatto:
-// va abbinato ad anchor 'bottom'. Distinto dalla goccia BLU dei risultati di
-// ricerca grazie al colore. Drop-shadow per staccarlo da QUALSIASI basemap.
+// Segnaposto del punto cliccato: un "punto di posizione" stile mappa — disco blu
+// pieno (brand Talea #1272B7) con bordo bianco e un alone azzurro morbido
+// intorno. Centrato sul punto esatto -> anchor 'center'. Forma chiaramente
+// diversa dalla goccia a PIN della ricerca, cosi' i due non si confondono.
 function makeProbeInfoElement(): HTMLDivElement {
   const el = document.createElement('div')
-  el.style.width = '26px'
-  el.style.height = '34px'
+  el.style.width = '28px'
+  el.style.height = '28px'
   el.style.cursor = 'pointer'
-  el.style.filter = 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))'
+  el.style.filter = 'drop-shadow(0 1px 3px rgba(0,0,0,0.45))'
+  const blue = '#1272b7'
   el.innerHTML =
-    '<svg width="26" height="34" viewBox="0 0 26 34" xmlns="http://www.w3.org/2000/svg">' +
-    `<path d="M13 1 C6.4 1 1 6.4 1 13 C1 21.5 13 33 13 33 C13 33 25 21.5 25 13 C25 6.4 19.6 1 13 1 Z" fill="${toCss(BOLOGNA_RED)}" stroke="#ffffff" stroke-width="2"/>` +
-    '<circle cx="13" cy="13" r="4.6" fill="#ffffff"/>' +
+    '<svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">' +
+    // alone azzurro morbido
+    `<circle cx="14" cy="14" r="12" fill="${blue}" fill-opacity="0.18"/>` +
+    `<circle cx="14" cy="14" r="9" fill="${blue}" fill-opacity="0.28"/>` +
+    // disco pieno con bordo bianco
+    `<circle cx="14" cy="14" r="6" fill="${blue}" stroke="#ffffff" stroke-width="2.5"/>` +
     '</svg>'
   return el
 }
@@ -1079,7 +1185,22 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // suo modulo (altrimenti edifici/tetti uscivano senza il tetto finche' non si
   // toccavano le ombre -> ricompilazione tardiva).
   const [overlayReady, setOverlayReady] = useState(false)
+  // Specchio SINCRONO di overlayReady: l'effect che popola i layer lo legge per
+  // non disegnare sul nuovo overlay PRIMA del suo 'idle' (lo stato React si
+  // aggiorna in differita; quando ricreo l'overlay al cambio ombre devo bloccare
+  // subito il popolamento, e il ref lo fa nello stesso ciclo di render).
+  const overlayReadyRef = useRef(false)
+  // Ultimo stato "ombre" effettivamente applicato all'overlay (null = init non
+  // ancora registrato). Serve a ricreare l'overlay SOLO quando il toggle cambia.
+  const shadowsAppliedRef = useRef<boolean | null>(null)
   const [loading, setLoading] = useState(true)
+  // Prontezza dei dati pesanti caricati all'avvio (edifici GeoJSON ~MB, alberi
+  // ~18 MB): il loader resta finche' NON sono pronti, poi si svela tutto.
+  const [mapLoaded, setMapLoaded] = useState(false)
+  const [buildingsReady, setBuildingsReady] = useState(false)
+  // Verde (aree verdi + parchi + verde privato): fonti MapLibre, pronte al
+  // primo 'idle' della mappa dopo il caricamento.
+  const [greenReady, setGreenReady] = useState(false)
   const [currentTime, setCurrentTime] = useState<Date>(
     () => new Date(2026, 5, 21, 12, 0, 0),
   )
@@ -1107,9 +1228,13 @@ export default function MapViewer({ lang }: MapViewerProps) {
   const [selectedTree, setSelectedTree] = useState<{
     lon: number
     lat: number
+    z: number
     props: TreeProps
   } | null>(null)
   const treePopupRef = useRef<maplibregl.Popup | null>(null)
+  // air_temp dell'edificio sotto l'ultimo click (null = nessun edificio o fuori
+  // dominio ENVI-met). Usato dal pannello del punto in modalita' temperatura.
+  const probeBuildingTempRef = useRef<number | null>(null)
   // Valori campionati al punto cliccato, derivati da `probe` + layer attivi:
   // vento solo se il layer 'wind' e' acceso, microclima per ogni overlay
   // ENVI-met spuntato.
@@ -1133,8 +1258,11 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // ai dB della strada sotto al cursore).
   const noiseTipRef = useRef<maplibregl.Popup | null>(null)
   const audioRef = useRef<{ ctx: AudioContext; gain: GainNode } | null>(null)
+  // Parto SUBITO dal file con le altezze (esiste): gli edifici 3D giusti si
+  // caricano dall'inizio, senza il flash del footprint piatto (z=0, sepolto
+  // sotto il terreno). Se il file processato mancasse, si ripiega sul footprint.
   const [buildingsUrl, setBuildingsUrl] = useState<string>(
-    BUILDINGS_FOOTPRINT_URL,
+    BUILDINGS_HEIGHTS_URL,
   )
   const [windOverlay, setWindOverlay] = useState<WindOverlay | null>(null)
   const windAddedRef = useRef(false)
@@ -1225,16 +1353,34 @@ export default function MapViewer({ lang }: MapViewerProps) {
       })
   }, [visibility])
 
+  // Loader iniziale: si chiude quando i dati pesanti dell'avvio sono pronti —
+  // edifici (onDataLoad del layer deck) E alberi (stato `trees` valorizzato,
+  // anche [] se il fetch fallisce). Aree verdi/parchi/verde privato sono fonti
+  // MapLibre leggere, gia' caricate per allora.
+  useEffect(() => {
+    if (mapLoaded && buildingsReady && trees !== null && greenReady)
+      setLoading(false)
+  }, [mapLoaded, buildingsReady, trees, greenReady])
+  // Rete di sicurezza: il loader non resta mai bloccato oltre 25 s.
+  useEffect(() => {
+    const t = setTimeout(() => setLoading(false), 25000)
+    return () => clearTimeout(t)
+  }, [])
+
   // Probe asset processati (altezze edifici da DSM, overlay vento). Se i file
   // non esistono ancora -- l'utente non ha lanciato gli script di build --
   // i layer ricadono sul footprint base / niente overlay.
   useEffect(() => {
     let cancelled = false
+    // Default = file con altezze. Se NON esiste (script non lanciati), ripiego
+    // sul footprint piatto cosi' gli edifici si vedono comunque.
     fetch(BUILDINGS_HEIGHTS_URL, { method: 'HEAD' })
       .then((r) => {
-        if (!cancelled && r.ok) setBuildingsUrl(BUILDINGS_HEIGHTS_URL)
+        if (!cancelled && !r.ok) setBuildingsUrl(BUILDINGS_FOOTPRINT_URL)
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!cancelled) setBuildingsUrl(BUILDINGS_FOOTPRINT_URL)
+      })
     // Stazioni qualita' aria: carico il geojson (se esiste) e lo metto in
     // stato; i marker DOM vengono creati da un effect dedicato.
     fetch(AIR_STATIONS_URL)
@@ -1325,7 +1471,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
     const overlays = envimetOverlays ?? []
     let cancelled = false
     for (const o of overlays) {
-      const on = visibility[envLayerId(o.key) as LayerKey]
+      // Carico il sampler se l'overlay e' acceso OPPURE, per la temperatura, se
+      // e' attivo 'Edifici -> temperatura' (cosi' il click mostra la temp aria
+      // anche senza l'overlay raster acceso).
+      const on =
+        visibility[envLayerId(o.key) as LayerKey] ||
+        (o.key === 'temperature' && visibility['buildings-temp'])
       if (!on || envRequestedRef.current.has(o.key)) continue
       envRequestedRef.current.add(o.key)
       fetch(withBase(o.values))
@@ -1363,12 +1514,25 @@ export default function MapViewer({ lang }: MapViewerProps) {
     const active = (envimetRef.current ?? []).filter(
       (o) => visibility[envLayerId(o.key) as LayerKey],
     )
+    // Se 'Edifici -> temperatura' e' attivo, mostra comunque la temperatura
+    // dell'aria al punto cliccato (anche con l'overlay raster spento).
+    if (visibility['buildings-temp']) {
+      const tempOv = (envimetRef.current ?? []).find((o) => o.key === 'temperature')
+      if (tempOv && !active.some((o) => o.key === 'temperature')) {
+        active.unshift(tempOv)
+      }
+    }
     setPointEnv(
       active.map((o) => ({
         key: o.key,
         label: o.label,
         unit: o.unit,
-        value: envSamplersRef.current[o.key]?.(lon, lat) ?? null,
+        // Per la temperatura preferisco la air_temp dell'edificio cliccato
+        // (esatta, = colore dell'edificio); altrimenti campiono il raster.
+        value:
+          o.key === 'temperature' && probeBuildingTempRef.current != null
+            ? probeBuildingTempRef.current
+            : (envSamplersRef.current[o.key]?.(lon, lat) ?? null),
       })),
     )
   }, [probe, visibility, envimetOverlays, samplersReady])
@@ -1454,12 +1618,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
       return
     }
     if (!probeMarkerRef.current) {
-      // Pin custom a goccia (vedi makeProbeInfoElement): alto contrasto su ogni
-      // basemap, distinto dalla goccia blu della ricerca. anchor 'bottom' => la
-      // punta del pin tocca esattamente il punto cliccato.
+      // Mirino circolare custom (vedi makeProbeInfoElement): alto contrasto su
+      // ogni basemap, forma diversa dal PIN della ricerca. anchor 'center' => il
+      // centro del mirino cade esattamente sul punto cliccato.
       const marker = new maplibregl.Marker({
         element: makeProbeInfoElement(),
-        anchor: 'bottom',
+        anchor: 'center',
       })
         .setLngLat([probe.lon, probe.lat])
         .addTo(map)
@@ -1761,27 +1925,40 @@ export default function MapViewer({ lang }: MapViewerProps) {
       whitenMapLabels(map)
       reapplyRef.current = addCustomLayers
 
-      // Effetto luce persistente: creato qui una volta, poi solo mutato.
-      const isDay0 =
-        getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0]).altitudeDeg > 0
-      const lighting = new LightingEffect(sunAmbientFor(currentTime.getTime()))
-      ;(lighting as unknown as { shadowColor: number[] }).shadowColor =
-        isDay0 && visibility['shadows'] && visibility['buildings-3d']
-          ? SHADOW_ON
-          : SHADOW_OFF
+      // Effetto luce: creato con lo stato ombre INIZIALE (di default off). Se il
+      // toggle "Ombre" cambia, l'overlay viene RICREATO (effect dedicato).
+      const shadows0 = !!visibility['shadows']
+      const lighting = new LightingEffect(
+        sunAmbientFor(currentTime.getTime(), shadows0),
+      )
+      ;(lighting as unknown as { shadowColor: number[] }).shadowColor = shadows0
+        ? SHADOW_ON
+        : SHADOW_OFF
       lightingRef.current = lighting
+      // Registro lo stato ombre con cui l'overlay nasce: l'effect di ricreazione
+      // confronta con questo per ricreare SOLO ai cambi reali del toggle.
+      shadowsAppliedRef.current = shadows0
 
       // Layer deck inizialmente VUOTI: vengono popolati dal toggle effect al
       // primo 'idle' (overlayReady), cosi' compilano DOPO che l'effetto ombre
       // ha registrato il suo modulo shader -> niente tetti mancanti.
+      // interleaved:true = deck.gl disegna DENTRO il contesto GL di MapLibre,
+      // usando la SUA camera (che include la quota del terreno al centro vista)
+      // e il SUO depth buffer. Cosi':
+      //  - gli edifici/alberi non "galleggiano" piu' (in non-interleaved deck
+      //    ignorava il terreno e tutto appariva sollevato di ~quota centro);
+      //  - il terreno OCCLUDE cio' che gli sta dietro (case dietro le colline).
       const overlay = new MapboxOverlay({
-        interleaved: false,
+        interleaved: true,
         effects: [lighting],
         layers: [],
       })
       map.addControl(overlay as unknown as maplibregl.IControl)
       overlayRef.current = overlay
-      map.once('idle', () => setOverlayReady(true))
+      map.once('idle', () => {
+        overlayReadyRef.current = true
+        setOverlayReady(true)
+      })
 
       // Centro vista per la dissolvenza edifici: iniziale + a ogni 'moveend'
       // (a fine spostamento, non per-frame). Ricolora i layer edifici/tetti.
@@ -1823,13 +2000,27 @@ export default function MapViewer({ lang }: MapViewerProps) {
           setSelectedTree({
             lon: tp.position[0],
             lat: tp.position[1],
+            z: tp.position[2] ?? 0,
             props: tp.props,
           })
           setProbe(null)
           return
         }
         // Click sul vuoto/edificio: i valori (vento / microclima) sono derivati
-        // in un effect dai layer attivi, qui registro solo il punto.
+        // in un effect dai layer attivi, qui registro solo il punto. In piu',
+        // se ho cliccato un edificio, leggo la sua air_temp (la temperatura che
+        // lo colora) cosi' il pannello la mostra esatta, anche dove il raster
+        // non campiona bene.
+        const pb = ov?.pickObject?.({
+          x: e.point.x,
+          y: e.point.y,
+          radius: 2,
+          layerIds: ['buildings-shadow'],
+        }) as unknown as
+          | { object?: { properties?: { air_temp?: number } } }
+          | null
+        const at = pb?.object?.properties?.air_temp
+        probeBuildingTempRef.current = typeof at === 'number' ? at : null
         setSelectedTree(null)
         setProbe({ lat: e.lngLat.lat, lon: e.lngLat.lng })
       })
@@ -1906,7 +2097,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
       map.on('moveend', syncBearing)
       syncBearing()
 
-      setLoading(false)
+      // NB: il loader NON si chiude qui (map 'load' = solo stile pronto). Si
+      // chiude quando edifici + alberi sono caricati (effect dedicato sotto),
+      // cosi' la scena appare gia' completa. Qui segnalo solo la tappa "stile".
+      setMapLoaded(true)
+      // Primo 'idle' = tutte le fonti MapLibre (verde/parchi/...) caricate.
+      map.once('idle', () => setGreenReady(true))
     })
 
     mapRef.current = map
@@ -1986,6 +2182,49 @@ export default function MapViewer({ lang }: MapViewerProps) {
   }, [windOverlay, visibility])
 
   // Toggle layer + propagazione dati alberi/altezze quando cambiano.
+  // Ricrea l'overlay deck al cambio del toggle "Ombre". Con interleaved NON si
+  // puo' cambiare _shadow a runtime sullo stesso overlay (ricompila il modulo
+  // ombre e fa sparire edifici/tetti); l'unico modo pulito e' creare un overlay
+  // NUOVO con _shadow gia' giusto. I layer vengono ripopolati dall'effect sotto
+  // dopo il prossimo 'idle' (quando overlayReadyRef torna true). Deve stare
+  // PRIMA dell'effect di popolamento cosi' gira per primo nello stesso render.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !overlayRef.current || shadowsAppliedRef.current === null) return
+    const shadowsOn = !!visibility['shadows']
+    if (shadowsAppliedRef.current === shadowsOn) return // ombre invariate
+    shadowsAppliedRef.current = shadowsOn
+
+    // Blocco SUBITO il popolamento (ref sincrono) finche' il nuovo overlay non
+    // ha fatto il suo 'idle': evito di disegnare su shader non pronti.
+    overlayReadyRef.current = false
+    setOverlayReady(false)
+
+    try {
+      map.removeControl(overlayRef.current as unknown as maplibregl.IControl)
+    } catch {
+      /* gia' rimosso */
+    }
+    const lighting = new LightingEffect(
+      sunAmbientFor(currentTimeRef.current.getTime(), shadowsOn),
+    )
+    ;(lighting as unknown as { shadowColor: number[] }).shadowColor = shadowsOn
+      ? SHADOW_ON
+      : SHADOW_OFF
+    lightingRef.current = lighting
+    const overlay = new MapboxOverlay({
+      interleaved: true,
+      effects: [lighting],
+      layers: [],
+    })
+    map.addControl(overlay as unknown as maplibregl.IControl)
+    overlayRef.current = overlay
+    map.once('idle', () => {
+      overlayReadyRef.current = true
+      setOverlayReady(true)
+    })
+  }, [visibility])
+
   useEffect(() => {
     const map = mapRef.current
     const overlay = overlayRef.current
@@ -2017,7 +2256,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
       if (map.getLayer('osm-buildings-context')) {
         map.setLayoutProperty('osm-buildings-context', 'visibility', maplibre3d)
       }
-      if (overlay && overlayReady) {
+      if (overlay && overlayReadyRef.current) {
         // Se 'buildings-temp' e' attivo, coloro ogni edificio per la sua
         // `air_temp` (campionata da ENVI-met dalla pipeline) normalizzata sul
         // range dell'overlay temperatura. Spaziale, non piu' city-wide:
@@ -2028,18 +2267,21 @@ export default function MapViewer({ lang }: MapViewerProps) {
           const tempOv = (envimetRef.current ?? []).find(
             (o) => o.key === 'temperature',
           )
-          tempRange = tempOv ? tempOv.range : { min: 29, max: 37 }
+          // Coloro sul range REALE osservato (piu' stretto del fisso 24-40):
+          // cosi' la rampa si usa tutta e le case calde/fredde si distinguono.
+          tempRange = tempOv
+            ? (tempOv.observed ?? tempOv.range)
+            : { min: 29, max: 37 }
         }
-        // Luce: MUTO l'effetto persistente (mai uno nuovo, vedi applyLighting)
-        // cosi' il cambio di shadowColor viene applicato davvero. _shadow resta
-        // costante -> nessuna ricompilazione, edifici sempre presenti.
-        const isDay =
-          getSunPosition(currentTime, AOI_CENTER[1], AOI_CENTER[0]).altitudeDeg >
-          0
-        const castShadows =
-          isDay && visibility['shadows'] && visibility['buildings-3d']
+        // Luce: aggiorno sole/ambient con l'ora. castShadows = stato del toggle
+        // "Ombre" (l'overlay e' stato creato/ricreato con _shadow coerente, vedi
+        // effect "ricrea overlay al cambio ombre"), quindi nessuna ricompilazione.
         if (lightingRef.current) {
-          applyLighting(lightingRef.current, currentTime.getTime(), castShadows)
+          applyLighting(
+            lightingRef.current,
+            currentTime.getTime(),
+            !!visibility['shadows'],
+          )
         }
         // Dissolvenza edifici lontani (null finche' non conosco il centro vista).
         const fade: FadeCfg | null = fadeCenter
@@ -2064,6 +2306,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
               buildingsUrl,
               tempRange,
               fade,
+              () => setBuildingsReady(true),
             ),
             // Tetti rosso mattone: solo col 3D acceso e NON in modalita'
             // temperatura (li' i tetti rossi coprirebbero la scala cromatica).
@@ -2172,6 +2415,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
         pitch: 35,
         bearing: 0,
         duration: 1400,
+        // linear:true => fitBounds usa easeTo (interpola DIRETTAMENTE centro e
+        // zoom) invece di flyTo, che faceva la parabola "zoom-out fino a vedere
+        // il centro citta', poi zoom-in sul quartiere". Ora va dritto al
+        // quartiere. easing ease-in-out per partenza/arrivo morbidi.
+        linear: true,
+        easing: (t: number) =>
+          t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
+        essential: true,
       },
     )
   }
@@ -2380,14 +2631,77 @@ export default function MapViewer({ lang }: MapViewerProps) {
     }
   }
 
+  // Tappe REALI di caricamento, ognuna col suo dataset/percorso. La barra non e'
+  // finta: avanza quando una tappa finisce davvero (onDataLoad / fetch / idle).
+  const loadSteps = [
+    {
+      done: mapLoaded,
+      label: lang === 'it' ? 'Stile mappa e terreno 3D' : 'Map style & 3D terrain',
+      detail: 'basemap · terrain DEM (z11–14)',
+    },
+    {
+      done: buildingsReady,
+      label: lang === 'it' ? 'Edifici 3D' : '3D buildings',
+      detail: '/data/processed/buildings_heights.geojson',
+    },
+    {
+      done: trees !== null,
+      label: lang === 'it' ? 'Alberi (~18 MB)' : 'Trees (~18 MB)',
+      detail: '/data/processed/trees_osm.geojson',
+    },
+    {
+      done: greenReady,
+      label:
+        lang === 'it'
+          ? 'Aree verdi · parchi · verde privato'
+          : 'Green areas · parks · private green',
+      detail: 'green.geojson · 2.1_Aree_Verdi · 2.2_Verde_Privato',
+    },
+  ]
+  const loadDone = loadSteps.filter((s) => s.done).length
+  const loadProgress = Math.round((loadDone / loadSteps.length) * 100)
+
   return (
     <div className="relative w-full h-full">
       {loading && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gray-950 gap-4">
-          <div className="w-10 h-10 border-2 border-talea-400 border-t-transparent rounded-full animate-spin" />
-          <p className="text-talea-400 tracking-widest text-sm font-mono uppercase">
-            {t('loading', lang)}
+        // z-[100] + sfondo OPACO = copre mappa, menu e ogni pannello UI: durante
+        // il caricamento si vede SOLO il loader (titolo, barra, lista dataset).
+        <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-gray-950 gap-6 px-8">
+          <p className="text-talea-400 text-2xl font-black uppercase tracking-[0.3em]">
+            UrbanScope3D
           </p>
+          <div className="w-80 max-w-[88vw] flex flex-col gap-3">
+            <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-talea-400 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${Math.max(4, loadProgress)}%` }}
+              />
+            </div>
+            <p className="text-talea-300 tracking-widest text-xs font-mono uppercase">
+              {t('loading', lang)} · {loadDone}/{loadSteps.length} · {loadProgress}%
+            </p>
+            <ul className="flex flex-col gap-2 mt-1">
+              {loadSteps.map((s, i) => (
+                <li key={i} className="flex items-start gap-2.5 text-xs font-mono">
+                  <span className="mt-0.5 w-4 flex-shrink-0 flex justify-center">
+                    {s.done ? (
+                      <span className="text-talea-400">✓</span>
+                    ) : (
+                      <span className="inline-block w-3 h-3 border-2 border-gray-700 border-t-talea-400 rounded-full animate-spin" />
+                    )}
+                  </span>
+                  <span className="flex flex-col min-w-0">
+                    <span className={s.done ? 'text-gray-300' : 'text-gray-400'}>
+                      {s.label}
+                    </span>
+                    <span className="text-gray-600 text-[10px] break-all leading-tight">
+                      {s.detail}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
       <div ref={containerRef} className="w-full h-full" />
@@ -2746,8 +3060,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
                         style={{ background: gradient(tempOv.legend) }}
                       />
                       <div className="flex justify-between text-gray-400 text-[10px] font-mono mt-0.5">
-                        <span>{tempOv.range.min}</span>
-                        <span>{tempOv.range.max}</span>
+                        <span>
+                          {Math.round((tempOv.observed ?? tempOv.range).min)}
+                        </span>
+                        <span>
+                          {Math.round((tempOv.observed ?? tempOv.range).max)}
+                        </span>
                       </div>
                       <div className="flex items-center gap-1 text-gray-500 text-[10px] font-mono mt-0.5">
                         <span
@@ -2832,9 +3150,23 @@ export default function MapViewer({ lang }: MapViewerProps) {
           onClick={takeScreenshot}
           title={t('screenshot', lang)}
           aria-label={t('screenshot', lang)}
-          className="w-10 h-10 rounded-full bg-gray-900/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-base"
+          className="w-10 h-10 rounded-full bg-gray-900/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors"
         >
-          📷
+          {/* Icona stampante stilizzata (outline) */}
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M6 9V2h12v7" />
+            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+            <rect x="6" y="14" width="12" height="8" />
+          </svg>
         </button>
         <button
           type="button"
