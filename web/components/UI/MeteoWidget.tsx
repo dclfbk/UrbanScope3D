@@ -33,7 +33,7 @@ type MeteoWidgetProps = {
 
 export default function MeteoWidget({ lang, onClose }: MeteoWidgetProps) {
   return (
-    <div className="absolute bottom-4 left-14 sm:left-16 z-20 w-fit max-w-[calc(100vw-5rem)] rounded-xl bg-gray-900/85 border border-talea-400/30 backdrop-blur-sm shadow-xl overflow-hidden">
+    <div className="absolute bottom-4 left-14 sm:left-16 z-20 w-fit max-w-[calc(100vw-5rem)] rounded-xl bg-talea-panel/85 border border-talea-400/30 backdrop-blur-sm shadow-xl overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 border-b border-talea-400/20">
         <span className="text-sm font-semibold text-talea-100 flex items-center gap-1.5">
           <span aria-hidden="true">⛅</span>

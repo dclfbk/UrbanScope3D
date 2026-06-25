@@ -24,6 +24,15 @@ It enables users to analyze and understand urban dynamics through spatial and vi
 * Enable integration of heterogeneous environmental datasets
 * Provide a foundation for future urban digital twin applications
 
+## Documentation
+Full notes are in [`documentation/`](documentation/). Key guides for the
+ENVI-met microclimate data:
+
+* **[How to add ENVI-met data — where to put the `.tif` files](documentation/13_envimet-dove-mettere-i-tif.md)** (quick start)
+* [ENVI-met data reference — all variables + height grid](documentation/11_envimet-data-reference.md)
+* [Adding / editing ENVI-met data — full guide](documentation/12_envimet-aggiungere-dati.md)
+* [Vegetation & street furniture (Bologna municipal data)](documentation/14_vegetation-and-street-furniture.md)
+
 ## Author
 Antonio Amabile (University of Trento)
 

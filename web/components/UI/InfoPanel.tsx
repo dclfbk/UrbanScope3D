@@ -27,7 +27,7 @@ export default function InfoPanel({
   onClose,
 }: Props) {
   return (
-    <div className="bg-gray-900/85 border border-talea-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl w-full">
+    <div className="bg-talea-panel/85 border border-talea-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl w-full">
       <div className="flex items-center justify-between mb-2">
         <div className="text-talea-400 text-xs font-mono uppercase tracking-widest">
           {t('point', lang)}
@@ -50,7 +50,7 @@ export default function InfoPanel({
             {t('windSpeed', lang)}
           </div>
           <div className="text-gray-200 text-sm font-mono">
-            <span className="text-emerald-300">
+            <span className="text-talea-green">
               {windSpeed.toFixed(2)} m/s
             </span>
           </div>

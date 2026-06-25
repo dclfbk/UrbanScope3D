@@ -29,6 +29,7 @@ Check available public datasets useful to build a 3D urban prototype on Bologna,
 | [DBTR - Albero isolato (ALB_GPT)](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/cartografia-di-base/database-topografico-regionale/vegetazione/verde-urbano/layer) | Geoportale Emilia-Romagna | Individual trees. | DXF, SHP, WMS, KMZ, GPKG, GeoJSON, FGDB; Download DB Topo | - | Regional | **Scale equivalent 1:5,000** | Only trees that are “evident and characteristic”, with canopy diameter at least **5 m**. Not complete. |
 | [DBTR - Filare di alberi (FIL_GLI)](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/cartografia-di-base/database-topografico-regionale/vegetazione/verde-urbano/layer-2) | Geoportale Emilia-Romagna | Tree rows. | DXF, SHP, WMS, KMZ, GPKG, GeoJSON, FGDB; Download DB Topo | - | Regional | **Scale equivalent 1:5,000** | Giving tree rows (distant less than 2m) |
 | [DBTR - Area verde (PSR_GPG)](https://geoportale.regione.emilia-romagna.it/catalogo/dati-cartografici/cartografia-di-base/database-topografico-regionale/vegetazione/verde-urbano/layer-1) | Geoportale Emilia-Romagna | Polygonal layer for urban green areas. | DXF, SHP, WMS, KMZ, GPKG, GeoJSON, FGDB; Download DB Topo | - | Regional | **Scale equivalent 1:5,000** | - |
+| [Alberi in manutenzione (`alberi-manutenzioni`)](https://bologna.opendatasoft.com/explore/dataset/alberi-manutenzioni/) | Open Data Bologna | **Official municipal trees (~86k)**: species (`classe`), trunk circumference class, district. Used in the viewer as the primary tree source (see [14_vegetation-and-street-furniture.md](14_vegetation-and-street-furniture.md)). | Opendatasoft API (GeoJSON) | WGS84 | Municipality of Bologna | per-tree point | More complete/official than OSM trees. No measured height (estimated from species + trunk class). |
 
 ---
 
@@ -57,6 +58,14 @@ Check available public datasets useful to build a 3D urban prototype on Bologna,
 | [Temperature Bologna](https://bologna.opendatasoft.com/explore/dataset/temperature_bologna/) | Open Data Bologna | Daily temperature | Opendatasoft export/API | - | Municipality of Bologna | **Daily** | For temporal analysis, not a spatial temperature raster. |
 | [Centraline qualità dell'aria (misurazioni giornaliere)](https://bologna.opendatasoft.com/explore/dataset/centraline-qualita-aria/?flg=it-it) | Open Data Bologna | Daily environmental station data for 3 Bologna stations: Giardini Margherita, Via Chiarini, Porta San Felice. | Opendatasoft export/API | Point/station based | 3 stations inside Bologna municipality | **Daily** | Useful for point-based environmental indicators; not a continuous surface. |
 | Velocita_Vento (raster) | shared dataset | Mean wind speed (m/s) as a continuous raster surface. Rendered in the viewer as a coloured overlay (MapLibre `image` source). See [9_viewer-expansion.md](9_viewer-expansion.md#wind-speed-overlay). | GeoTIFF (`04_Velocita_Vento.tif`, ~270 KB) | declared in the GeoTIFF metadata (reprojected to EPSG:4326 by the build script) | Sub-municipal | depends on source raster grid | Source/period to be confirmed before public release; current viewer colour scale assumes 0-6 m/s. |
+
+---
+
+### 6. Street furniture (arredo urbano)
+
+| Dataset | Portal | Info | Format / access | CRS | Spatial coverage | Resolution | Notes |
+|---|---|---|---|---|---|---|---|
+| [Arredo Urbano (`arredo`)](https://bologna.opendatasoft.com/explore/dataset/arredo/) | Open Data Bologna | **Street furniture (~14k)**: benches, bins, fountains, railings (`classe_arredo`), conservation state, district. Shown in the viewer as 3D models (see [14_vegetation-and-street-furniture.md](14_vegetation-and-street-furniture.md)). | Opendatasoft API (GeoJSON) | WGS84 | Municipality of Bologna | per-item point | No orientation field. **No public lighting / lampposts** dataset exists (managed by the concessionaire). |
 
 ---
 

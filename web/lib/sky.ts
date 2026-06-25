@@ -80,9 +80,19 @@ export function computeSky(altitudeDeg: number): SkySpecification {
     'sky-color': rgb(sky),
     'horizon-color': rgb(horizon),
     'fog-color': rgb(fog),
-    'fog-ground-blend': 0.5,
-    'horizon-fog-blend': 0.5,
-    'sky-horizon-blend': 0.7,
-    'atmosphere-blend': 1.0 - 0.4 * n, // atmosfera attenuata di notte
+    // Foschia RIDOTTA: prima (0.5/0.5, atmosphere ~1.0) le colline a sud, viste
+    // basse dalla citta', venivano "mangiate" dalla foschia verso l'orizzonte e
+    // sembravano trasparenti. Ora il suolo resta limpido (ground-blend alto) e
+    // la foschia all'orizzonte e' minima -> terreno e colline nitidi.
+    // FOG BIANCA SPENTA. La spec MapLibre: `fog-color` default = #ffffff e la fog
+    // "Requires 3D terrain" -> da quando c'e' il terreno 3D, la fog bianca
+    // copriva tutta la mappa come un velo lattiginoso. La azzeriamo di giorno:
+    //  - fog-ground-blend 1.0  -> la fog (se c'e') sta solo all'estremo orizzonte
+    //  - horizon-fog-blend 0.0 -> l'orizzonte usa horizon-color, niente fog bianca
+    //  - atmosphere-blend 0    -> nessuna atmosfera di giorno (un filo di notte)
+    'fog-ground-blend': 1.0,
+    'horizon-fog-blend': 0.0,
+    'sky-horizon-blend': 0.5,
+    'atmosphere-blend': 0.12 * n,
   }
 }

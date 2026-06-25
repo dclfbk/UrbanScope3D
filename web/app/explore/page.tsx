@@ -20,8 +20,8 @@ export default function ExplorePage() {
     setLang(nav?.toLowerCase().startsWith('it') ? 'it' : 'en')
   }, [])
   return (
-    <main className="w-full h-screen bg-gray-950 flex flex-col">
-      <div className="relative flex items-center px-3 sm:px-6 py-2 sm:py-3 bg-gray-900 border-b border-talea-400/20 z-20">
+    <main className="w-full h-screen bg-talea-panel flex flex-col">
+      <div className="relative flex items-center px-3 sm:px-6 py-2 sm:py-3 bg-talea-panel border-b border-talea-400/20 z-20">
         <Link href="/" className="text-talea-400 text-sm sm:text-lg font-bold font-mono tracking-wider hover:opacity-80 transition-opacity">
           ← UrbanScope3D
         </Link>
@@ -29,7 +29,7 @@ export default function ExplorePage() {
           Bologna
         </span>
         {/* Toggle lingua: angolo top-right della top bar. */}
-        <div className="ml-auto flex bg-gray-800 border border-talea-400/30 rounded overflow-hidden">
+        <div className="ml-auto flex bg-talea-panel-2 border border-talea-400/30 rounded overflow-hidden">
           {(['it', 'en'] as const).map((code) => (
             <button
               key={code}

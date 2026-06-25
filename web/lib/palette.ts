@@ -29,6 +29,13 @@ export const BOLOGNA_SANGIOVESE: RGB = [123, 36, 28]
 // all'orizzonte invece di sparire nel buio.
 export const BOLOGNA_FOREST_DARK: RGB = [31, 56, 38]
 
+// Suolo chiaro "stile streets.gl": il basemap chiaro (Voyager) ha sia il layer
+// `background` (#fbf8f3, quasi bianco) sia il `landuse_residential` (beige
+// chiaro) che coprono gran parte della scena -> la mappa sembrava un foglio
+// bianco. Li uniformiamo a questo verde-salvia naturale, chiaramente NON bianco
+// (e nemmeno nero), come il ground uniforme di streets.gl.
+export const GROUND_LIGHT: RGB = [150, 161, 137]
+
 // ---------------------------------------------------------------------------
 // Brand Talea (manuale d'immagine, documentation/TALEA_BRAND GUIDELINE.pdf).
 // La UI chrome usa il BLU come colore primario (vedi scala `talea-*` in

@@ -2,16 +2,15 @@
 
 ## Scope
 
-Issue 9 grew the viewer's data side (building heights, microclimate, noise,
-quartieri). Issue 10 is mostly about the *interaction* side: clearer click
-feedback, neighborhood perimeters, consistent Talea colours, terrain
-elevation, richer trees, and giving the user tools to drop their own things
-on the map (vegetation, urban furniture, point/line geometry). Plus weather,
-a print button and social sharing.
+Prototype v2 (doc 9) grew the viewer's data side (building heights,
+microclimate, noise, quartieri). This round is mostly about the *interaction*
+side: clearer click feedback, neighborhood perimeters, consistent Talea
+colours, terrain elevation, richer trees, and giving the user tools to drop
+their own things on the map (vegetation, urban furniture, point/line
+geometry). Plus weather, a print button and social sharing.
 
-Same shape as the Issue 9 doc: a status table per area, and each big item
-grows its own note once it's picked up. Sections below marked *da compilare*
-are placeholders — filled in as the work lands.
+Same shape as doc 9: a status table per area, and each big item grows its own
+note once it's picked up.
 
 ---
 
@@ -130,17 +129,21 @@ little headroom for future sims):
 
 | Status | Item |
 |---|---|
-| TODO | DTM–DSM elevation, at least within the Talea square |
-| TODO | Elevation grid via 3D Tiles |
+| DONE | Terrain elevation across the whole view |
+| — | Elevation grid via 3D Tiles (not needed — see below) |
 
-The open problem from Issue 9: MapLibre terrain sinks the deck.gl buildings
-(they sit at z=0, not on the DEM). Two routes:
+The open problem from doc 9 was that MapLibre terrain sank the deck.gl
+buildings (they sat at z=0, not on the DEM). Solved with **MapLibre
+`setTerrain` + a self-hosted Terrarium DEM** (`scripts/download_terrain_tiles.py`,
+z11–15, served same-origin to dodge the S3 CORS issue), and by **baking each
+feature's ground elevation into its z** (`scripts/bake_terrain_elevation.py`
+writes z into `buildings_heights.geojson` and the trees): deck reads the vertex
+z as the extrusion base, so buildings/trees sit on the terrain. 3D-Tiles route
+dropped — the `setTerrain` + baked-z path already works.
 
-- **DTM–DSM**, scoped to the Talea square first — small enough to offset each
-  building by its terrain base without a comune-wide DEM step.
-- **3D Tiles** elevation grid (quote) — heavier, but the general fix.
-
-*da compilare* — which route, and how buildings get their per-base offset.
+ENVI-met overlays follow the same terrain: they are **draped as a MapLibre
+`image` source** (not a flat deck plane), so at low quotas the ~26 m of terrain
+relief inside the domain no longer pokes through the data.
 
 ---
 
@@ -164,16 +167,21 @@ popup with the tree's attributes, like the air stations already do.
 
 | Status | Item |
 |---|---|
-| TODO | User adds vegetation and street furniture |
-| TODO | Point / line geometry editing |
+| DONE | User adds vegetation and street furniture |
+| DONE | Point / line geometry editing |
 
-This is the biggest shift: the viewer stops being read-only. User drops a
-tree / bench / lamp (point), or draws a path / barrier (line), and it renders
-in the scene. Open question is persistence — local only (browser), or export
-the edits as GeoJSON to hand back.
+The viewer is no longer read-only. An "＋ Aggiungi" toolbar (bottom-right) lets
+the user place objects: **point tools** (tree / bench / bin / fountain / lamp /
+bollard — one click) and **line tools** (tree row / hedge / railing — two clicks
+fill the segment). Implemented in `MapViewer.tsx` (`INSERT_TOOLS`, `lineBetween`,
+`buildPlacedLayers`; the map click handler routes through `insertToolRef` /
+`lineStartRef`, z from `map.queryTerrainElevation`). Reuses the same 3D meshes as
+the trees/arredo layers. **Persistence: session-only** (not saved/exported yet) —
+that's the next open item, together with rotation and selective deletion.
 
-*da compilare* — editing library (e.g. Mapbox GL Draw / Terra Draw), the
-catalogue of placeable furniture, and whether edits persist.
+The placeable furniture also has real data behind it: the **Comune di Bologna
+open datasets** for trees (`alberi-manutenzioni`) and street furniture (`arredo`)
+are downloaded and rendered as 3D objects — see doc 14.
 
 ---
 
@@ -194,11 +202,76 @@ need a JSON source (e.g. Open-Meteo) instead of the widget.
 
 ---
 
+## Recent changes (June 2026)
+
+- **Brand font** — the real **Calibre Semibold** (Talea licence, web font) is now
+  in `web/public/fonts/` and wired via `next/font/local`; Hanken Grotesk is the
+  fallback. See the brand guideline (doc / PDF).
+- **Default basemap is now light** ("Mappa" = Carto Voyager) instead of the dark
+  one, so the map no longer reads as a dark background. Label whitening is kept
+  for the Dark basemap only.
+- **ENVI-met overlay draped on terrain** — was a flat deck plane that got pierced
+  by the terrain at low quotas (the domain has ~26 m of relief). Now a MapLibre
+  `image` source that follows the terrain per-pixel. The height slider switches
+  the image; the clicked-point marker is the ground DOM marker.
+- **No-data shown as soft green** — the ENVI-met `NoData` cells are filled with a
+  pale sage green (`build_envimet_overlays.py`, `colorize`) instead of being
+  transparent, so the domain has no holes.
+- **Street furniture popup** — title is now a localized category (Fontana /
+  Panchina / …); the ~3 800 items the Comune left unclassified (added in 2004,
+  no type field) just read "Arredo urbano / Street furniture".
+- **Map labels raised** above the 3D buildings (`raiseMapLabels`).
+
+### Microclimate 3D + UI (late June 2026)
+
+This batch **supersedes** two earlier bullets above: the default basemap is now
+**Dark** again, and the ENVI-met overlay is no longer terrain-draped — it is a
+**raised sheet**.
+
+- **Default basemap → Dark.** `useState('dark')`. The campagna-green background
+  tint (`tintBasemapBackground`) applies to the Dark basemap only; the light
+  ("Mappa"/Voyager) basemap is left untouched.
+- **White fog veil removed.** MapLibre's sky `fog-color` defaults to `#ffffff`
+  and "requires 3D terrain": once the terrain was added it laid a milky white
+  film over the whole scene. In `lib/sky.ts` the fog/atmosphere is now ~off by
+  day (`horizon-fog-blend 0`, `atmosphere-blend 0`). Day **ambient light** also
+  lowered `1.5 → 1.05` (it was washing the buildings out).
+- **ENVI-met overlay = raised sheet ("foglio che sale").** It is now a deck.gl
+  `BitmapLayer` placed at `ENV_GROUND_ELEV (56.9 m) + band quota`, so the height
+  slider physically lifts it in 3D. `ENV_GROUND_ELEV` = `ground_elev` from
+  `overlays.json`; terrain exaggeration is 1, so deck metres match the terrain.
+  - The sheet is flat and rendered with `depthCompare: 'always'` so that where
+    the terrain is higher than the band quota it is **drawn on top** instead of
+    being hidden (the "first few metres were cut off" problem). Trade-off: from
+    an oblique angle the flat sheet can overdraw terrain/buildings in front of
+    it (X-ray); a terrain-hugging tessellated mesh is the future fix.
+  - **Slider fix:** the old MapLibre `image` source reused the same source id,
+    so the terrain texture cache never refreshed and the quota "didn't change".
+    The BitmapLayer rebuilds per band, so it updates reliably.
+- **Auto-frame from above.** Selecting a microclimate overlay (`selectEnv`) **or**
+  "Edifici → temperatura" flies the camera over the ENVI-met domain top-down
+  (`flyToEnvDomain`, pitch 0) so the user doesn't have to hunt for the data square.
+- **Clicked-point marker on the sheet.** A flat deck.gl disc (`env-probe-dot`,
+  Talea blue) sits on the raised sheet at its quota; the ground DOM marker is
+  hidden while a sheet is active (otherwise it would stay on the terrain below).
+- **Green layers deduped.** "Parchi" was the **same 5044 features** as "Aree
+  verdi" (just fewer attributes) → removed. Only **Aree verdi** (`green.geojson`)
+  is kept.
+- **Default layers:** Buildings 3D + Aree verdi + Verde privato **ON**; Alberi
+  and Arredo urbano **OFF** (trees are ~100k instances; furniture on demand).
+- **Layers panel:** removed the "Click on the map → temperature / wind" hint.
+- **Share** now always uses the **production** GitHub Pages URL
+  (`https://dclfbk.github.io/UrbanScope3D/`) instead of `window.location.href`,
+  and includes it even when sharing the rendered image.
+- **UI tweaks:** the Zone (districts) toggle moved a bit right of the search bar;
+  the legend raised (`bottom-24`) with a capped height so it covers neither the
+  "Aggiungi" toolbar nor the height-slider panel.
+
 ## Open questions
 
 | Status | Question |
 |---|---|
-| TODO | Talea colours: fixed range per variable, or per family? |
-| TODO | Terrain: DTM–DSM offset per building vs full 3D Tiles? |
-| TODO | User edits: keep in-browser or export as GeoJSON? |
+| DONE | Talea colours: fixed range **per variable** (see Microclimate section) |
+| DONE | Terrain: `setTerrain` + baked-z per feature (3D Tiles not needed) |
+| TODO | User edits: keep in-browser or export as GeoJSON? (currently session-only) |
 | TODO | Print: include the basemap attribution + north arrow in the export? |

@@ -8,7 +8,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-hanken), var(--font-geist-sans);
+  --font-sans: var(--font-calibre), var(--font-hanken), var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
@@ -34,6 +34,12 @@
   --color-talea-200: #a9cfee; /* era cyan-200 #a5f3fc */
   --color-talea-300: #5ba4dc; /* era cyan-300 #67e8f9 — testo link su scuro */
   --color-talea-400: #1272b7; /* era cyan-400 #22d3ee — accento primario */
+
+  /* Sfondo dei pannelli/chrome: verde-quasi-nero, una "sfumatura" scura del
+     verde scuro di brand (#004D19) invece del grigio neutro. Usato con i
+     modificatori di opacita' sopra la mappa (es. bg-talea-panel/85). */
+  --color-talea-panel: #0b1812; /* pannelli (era gray-900/950) */
+  --color-talea-panel-2: #14241b; /* input / superfici secondarie (era gray-800) */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -46,11 +52,10 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  /* Font di brand Talea: Calibre e' commerciale e non distribuibile, quindi
-     usiamo Hanken Grotesk (grottesco geometrico-umanista molto vicino).
-     Per passare a Calibre vero: metti i .woff2 in public/fonts e carica via
-     next/font/local in layout.tsx, poi cambia qui il primo nome. */
-  font-family: var(--font-hanken), Arial, Helvetica, sans-serif;
+  /* Font di brand Talea: Calibre Semibold (licenza Talea, .woff2 in
+     public/fonts, caricato via next/font/local). Hanken Grotesk resta come
+     fallback vicino se il font non carica. */
+  font-family: var(--font-calibre), var(--font-hanken), Arial, Helvetica, sans-serif;
 }
 
 /* I popup MapLibre (stazioni aria, tooltip rumore) vivono dentro il

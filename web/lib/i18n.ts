@@ -26,6 +26,7 @@ export const STRINGS = {
   layer_buildings_2d: { it: 'Edifici (footprint 2D)', en: 'Buildings (2D footprint)' },
   layer_buildings_temp: { it: 'Edifici → temperatura (ENVI-met)', en: 'Buildings → temperature (ENVI-met)' },
   layer_trees: { it: 'Alberi', en: 'Trees' },
+  layer_arredo: { it: 'Arredo urbano', en: 'Street furniture' },
   layer_green: { it: 'Aree verdi', en: 'Green areas' },
   layer_parks: { it: 'Parchi pubblici', en: 'Public parks' },
   layer_private_green: { it: 'Verde privato', en: 'Private green' },

@@ -32,6 +32,20 @@
 # finche' manca l'ancoraggio geografico (vedi 9_viewer-expansion.md).
 /web/public/data/Envimet_data/
 
+# Stessi grezzi, ma finiscono anche nel build statico docs/ (Next copia TUTTO
+# web/public/ in out/). L'app non li serve: escludili anche da docs/ così il
+# commit per GitHub Pages resta leggero (altrimenti docs/ pesa ~11 GB).
+/docs/data/1)Buildings/1.2_DBTR_Edificio.json
+/docs/data/1)Buildings/1.3_DBTR_Unita_Volumetrica.json
+/docs/data/2)Vegetation/2.4.2_estraz_procons.json
+/docs/data/4)LandUse-GroundSurface/4.1_Uso_Suolo_Dettaglio_2020_ETRS89/
+/docs/data/4)LandUse-GroundSurface/4.2_Uso_Suolo_Dettaglio_2020_GBO/
+/docs/data/4)LandUse-GroundSurface/4.3_Uso_Suolo_Dettaglio_2020_UTMRER/
+/docs/data/4)LandUse-GroundSurface/4.4_Uso_Suolo_Dettaglio_2020_RDN32/
+/docs/data/DatiLeonardo_8-05-2026/
+/docs/data/wetransfer_dsm_bologna_2026-05-08_1237.zip
+/docs/data/Envimet_data/
+
 # Claude Code locale
 .claude/
 

@@ -1,18 +1,68 @@
 {
   "source": "ENVI-met PILOT-01-TALEA 2024-07-27 11:00 (z_band=2)",
   "georef_from": "04_Velocita_Vento.tif",
+  "ground_elev": 56.9,
   "overlays": [
     {
       "key": "temperature",
-      "label": "Temperatura aria",
+      "label": "Temperatura dell'aria",
       "unit": "°C",
       "image": "/data/processed/envimet/temperature.png",
       "values": "/data/processed/envimet/temperature.values.json",
+      "curated": true,
       "z_band": 2,
+      "heights": [
+        {
+          "band": 2,
+          "z_m": 1.5,
+          "image": "/data/processed/envimet/temperature__z2.png"
+        },
+        {
+          "band": 5,
+          "z_m": 4.5,
+          "image": "/data/processed/envimet/temperature__z5.png"
+        },
+        {
+          "band": 6,
+          "z_m": 7.5,
+          "image": "/data/processed/envimet/temperature__z6.png"
+        },
+        {
+          "band": 7,
+          "z_m": 10.5,
+          "image": "/data/processed/envimet/temperature__z7.png"
+        },
+        {
+          "band": 8,
+          "z_m": 13.5,
+          "image": "/data/processed/envimet/temperature__z8.png"
+        },
+        {
+          "band": 9,
+          "z_m": 16.5,
+          "image": "/data/processed/envimet/temperature__z9.png"
+        },
+        {
+          "band": 12,
+          "z_m": 25.5,
+          "image": "/data/processed/envimet/temperature__z12.png"
+        },
+        {
+          "band": 17,
+          "z_m": 40.5,
+          "image": "/data/processed/envimet/temperature__z17.png"
+        },
+        {
+          "band": 23,
+          "z_m": 58.5,
+          "image": "/data/processed/envimet/temperature__z23.png"
+        }
+      ],
       "range": {
-        "min": 31.85,
-        "max": 34.81
+        "min": 24.0,
+        "max": 40.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 29.78,
         "max": 35.96
@@ -43,42 +93,91 @@
       ],
       "legend": [
         {
-          "value": 31.85,
+          "value": 24.0,
           "color": "#ffffb2"
         },
         {
-          "value": 32.44,
+          "value": 27.2,
           "color": "#fee182"
         },
         {
-          "value": 33.03,
+          "value": 30.4,
           "color": "#fec25d"
         },
         {
-          "value": 33.63,
+          "value": 33.6,
           "color": "#fea346"
         },
         {
-          "value": 34.22,
+          "value": 36.8,
           "color": "#f07138"
         },
         {
-          "value": 34.81,
+          "value": 40.0,
           "color": "#bd0026"
         }
       ]
     },
     {
       "key": "humidity",
-      "label": "Umidità relativa",
+      "label": "Umidità dell'aria",
       "unit": "%",
       "image": "/data/processed/envimet/humidity.png",
       "values": "/data/processed/envimet/humidity.values.json",
+      "curated": true,
       "z_band": 2,
+      "heights": [
+        {
+          "band": 2,
+          "z_m": 1.5,
+          "image": "/data/processed/envimet/humidity__z2.png"
+        },
+        {
+          "band": 5,
+          "z_m": 4.5,
+          "image": "/data/processed/envimet/humidity__z5.png"
+        },
+        {
+          "band": 6,
+          "z_m": 7.5,
+          "image": "/data/processed/envimet/humidity__z6.png"
+        },
+        {
+          "band": 7,
+          "z_m": 10.5,
+          "image": "/data/processed/envimet/humidity__z7.png"
+        },
+        {
+          "band": 8,
+          "z_m": 13.5,
+          "image": "/data/processed/envimet/humidity__z8.png"
+        },
+        {
+          "band": 9,
+          "z_m": 16.5,
+          "image": "/data/processed/envimet/humidity__z9.png"
+        },
+        {
+          "band": 12,
+          "z_m": 25.5,
+          "image": "/data/processed/envimet/humidity__z12.png"
+        },
+        {
+          "band": 17,
+          "z_m": 40.5,
+          "image": "/data/processed/envimet/humidity__z17.png"
+        },
+        {
+          "band": 23,
+          "z_m": 58.5,
+          "image": "/data/processed/envimet/humidity__z23.png"
+        }
+      ],
       "range": {
-        "min": 36.23,
-        "max": 43.31
+        "min": 30.0,
+        "max": 70.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 34.58,
         "max": 47.23
@@ -109,42 +208,45 @@
       ],
       "legend": [
         {
-          "value": 36.23,
+          "value": 30.0,
           "color": "#f7fbff"
         },
         {
-          "value": 37.65,
+          "value": 38.0,
           "color": "#bfdcef"
         },
         {
-          "value": 39.07,
+          "value": 46.0,
           "color": "#87bdde"
         },
         {
-          "value": 40.48,
+          "value": 54.0,
           "color": "#5795c1"
         },
         {
-          "value": 41.9,
+          "value": 62.0,
           "color": "#306296"
         },
         {
-          "value": 43.31,
+          "value": 70.0,
           "color": "#08306b"
         }
       ]
     },
     {
       "key": "vegetation_lad",
-      "label": "Vegetazione (LAD)",
+      "label": "Vegetazione (chioma)",
       "unit": "m²/m³",
       "image": "/data/processed/envimet/vegetation_lad.png",
       "values": "/data/processed/envimet/vegetation_lad.values.json",
+      "curated": true,
       "z_band": "max-z",
+      "heights": [],
       "range": {
         "min": 0.0,
-        "max": 0.3
+        "max": 0.5
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 0.0,
         "max": 0.3
@@ -179,38 +281,87 @@
           "color": "#f7fcf5"
         },
         {
-          "value": 0.06,
+          "value": 0.1,
           "color": "#c3e6c2"
         },
         {
-          "value": 0.12,
+          "value": 0.2,
           "color": "#8ecf8f"
         },
         {
-          "value": 0.18,
+          "value": 0.3,
           "color": "#5daa64"
         },
         {
-          "value": 0.24,
+          "value": 0.4,
           "color": "#2e773f"
         },
         {
-          "value": 0.3,
+          "value": 0.5,
           "color": "#00441b"
         }
       ]
     },
     {
       "key": "direct_sw",
-      "label": "Radiazione diretta",
+      "label": "Sole diretto",
       "unit": "W/m²",
       "image": "/data/processed/envimet/direct_sw.png",
       "values": "/data/processed/envimet/direct_sw.values.json",
+      "curated": true,
       "z_band": 2,
+      "heights": [
+        {
+          "band": 2,
+          "z_m": 1.5,
+          "image": "/data/processed/envimet/direct_sw__z2.png"
+        },
+        {
+          "band": 5,
+          "z_m": 4.5,
+          "image": "/data/processed/envimet/direct_sw__z5.png"
+        },
+        {
+          "band": 6,
+          "z_m": 7.5,
+          "image": "/data/processed/envimet/direct_sw__z6.png"
+        },
+        {
+          "band": 7,
+          "z_m": 10.5,
+          "image": "/data/processed/envimet/direct_sw__z7.png"
+        },
+        {
+          "band": 8,
+          "z_m": 13.5,
+          "image": "/data/processed/envimet/direct_sw__z8.png"
+        },
+        {
+          "band": 9,
+          "z_m": 16.5,
+          "image": "/data/processed/envimet/direct_sw__z9.png"
+        },
+        {
+          "band": 12,
+          "z_m": 25.5,
+          "image": "/data/processed/envimet/direct_sw__z12.png"
+        },
+        {
+          "band": 17,
+          "z_m": 40.5,
+          "image": "/data/processed/envimet/direct_sw__z17.png"
+        },
+        {
+          "band": 23,
+          "z_m": 58.5,
+          "image": "/data/processed/envimet/direct_sw__z23.png"
+        }
+      ],
       "range": {
         "min": 0.0,
-        "max": 987.6
+        "max": 1000.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 0.0,
         "max": 987.6
@@ -245,38 +396,87 @@
           "color": "#000004"
         },
         {
-          "value": 197.52,
+          "value": 200.0,
           "color": "#410e64"
         },
         {
-          "value": 395.04,
+          "value": 400.0,
           "color": "#8e287a"
         },
         {
-          "value": 592.56,
+          "value": 600.0,
           "color": "#d3586f"
         },
         {
-          "value": 790.08,
+          "value": 800.0,
           "color": "#fca074"
         },
         {
-          "value": 987.6,
+          "value": 1000.0,
           "color": "#fcfdbf"
         }
       ]
     },
     {
       "key": "diffuse_sw",
-      "label": "Radiazione diffusa",
+      "label": "Luce diffusa dal cielo",
       "unit": "W/m²",
       "image": "/data/processed/envimet/diffuse_sw.png",
       "values": "/data/processed/envimet/diffuse_sw.values.json",
+      "curated": true,
       "z_band": 2,
+      "heights": [
+        {
+          "band": 2,
+          "z_m": 1.5,
+          "image": "/data/processed/envimet/diffuse_sw__z2.png"
+        },
+        {
+          "band": 5,
+          "z_m": 4.5,
+          "image": "/data/processed/envimet/diffuse_sw__z5.png"
+        },
+        {
+          "band": 6,
+          "z_m": 7.5,
+          "image": "/data/processed/envimet/diffuse_sw__z6.png"
+        },
+        {
+          "band": 7,
+          "z_m": 10.5,
+          "image": "/data/processed/envimet/diffuse_sw__z7.png"
+        },
+        {
+          "band": 8,
+          "z_m": 13.5,
+          "image": "/data/processed/envimet/diffuse_sw__z8.png"
+        },
+        {
+          "band": 9,
+          "z_m": 16.5,
+          "image": "/data/processed/envimet/diffuse_sw__z9.png"
+        },
+        {
+          "band": 12,
+          "z_m": 25.5,
+          "image": "/data/processed/envimet/diffuse_sw__z12.png"
+        },
+        {
+          "band": 17,
+          "z_m": 40.5,
+          "image": "/data/processed/envimet/diffuse_sw__z17.png"
+        },
+        {
+          "band": 23,
+          "z_m": 58.5,
+          "image": "/data/processed/envimet/diffuse_sw__z23.png"
+        }
+      ],
       "range": {
         "min": 0.0,
-        "max": 114.62
+        "max": 200.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 0.0,
         "max": 118.06
@@ -311,38 +511,87 @@
           "color": "#000004"
         },
         {
-          "value": 22.92,
+          "value": 40.0,
           "color": "#410e64"
         },
         {
-          "value": 45.85,
+          "value": 80.0,
           "color": "#8e287a"
         },
         {
-          "value": 68.77,
+          "value": 120.0,
           "color": "#d3586f"
         },
         {
-          "value": 91.7,
+          "value": 160.0,
           "color": "#fca074"
         },
         {
-          "value": 114.62,
+          "value": 200.0,
           "color": "#fcfdbf"
         }
       ]
     },
     {
       "key": "reflected_sw",
-      "label": "Radiazione riflessa",
+      "label": "Sole riflesso da muri e suolo",
       "unit": "W/m²",
       "image": "/data/processed/envimet/reflected_sw.png",
       "values": "/data/processed/envimet/reflected_sw.values.json",
+      "curated": true,
       "z_band": 2,
+      "heights": [
+        {
+          "band": 2,
+          "z_m": 1.5,
+          "image": "/data/processed/envimet/reflected_sw__z2.png"
+        },
+        {
+          "band": 5,
+          "z_m": 4.5,
+          "image": "/data/processed/envimet/reflected_sw__z5.png"
+        },
+        {
+          "band": 6,
+          "z_m": 7.5,
+          "image": "/data/processed/envimet/reflected_sw__z6.png"
+        },
+        {
+          "band": 7,
+          "z_m": 10.5,
+          "image": "/data/processed/envimet/reflected_sw__z7.png"
+        },
+        {
+          "band": 8,
+          "z_m": 13.5,
+          "image": "/data/processed/envimet/reflected_sw__z8.png"
+        },
+        {
+          "band": 9,
+          "z_m": 16.5,
+          "image": "/data/processed/envimet/reflected_sw__z9.png"
+        },
+        {
+          "band": 12,
+          "z_m": 25.5,
+          "image": "/data/processed/envimet/reflected_sw__z12.png"
+        },
+        {
+          "band": 17,
+          "z_m": 40.5,
+          "image": "/data/processed/envimet/reflected_sw__z17.png"
+        },
+        {
+          "band": 23,
+          "z_m": 58.5,
+          "image": "/data/processed/envimet/reflected_sw__z23.png"
+        }
+      ],
       "range": {
-        "min": 40.29,
-        "max": 342.01
+        "min": 0.0,
+        "max": 400.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 17.22,
         "max": 383.29
@@ -373,42 +622,91 @@
       ],
       "legend": [
         {
-          "value": 40.29,
+          "value": 0.0,
           "color": "#000004"
         },
         {
-          "value": 100.64,
+          "value": 80.0,
           "color": "#410e64"
         },
         {
-          "value": 160.98,
+          "value": 160.0,
           "color": "#8e287a"
         },
         {
-          "value": 221.32,
+          "value": 240.0,
           "color": "#d3586f"
         },
         {
-          "value": 281.66,
+          "value": 320.0,
           "color": "#fca074"
         },
         {
-          "value": 342.01,
+          "value": 400.0,
           "color": "#fcfdbf"
         }
       ]
     },
     {
       "key": "mean_radiant_temp",
-      "label": "Mean Radiant Temp.",
+      "label": "Temperatura percepita",
       "unit": "°C",
       "image": "/data/processed/envimet/mean_radiant_temp.png",
       "values": "/data/processed/envimet/mean_radiant_temp.values.json",
+      "curated": true,
       "z_band": 2,
+      "heights": [
+        {
+          "band": 2,
+          "z_m": 1.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z2.png"
+        },
+        {
+          "band": 5,
+          "z_m": 4.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z5.png"
+        },
+        {
+          "band": 6,
+          "z_m": 7.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z6.png"
+        },
+        {
+          "band": 7,
+          "z_m": 10.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z7.png"
+        },
+        {
+          "band": 8,
+          "z_m": 13.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z8.png"
+        },
+        {
+          "band": 9,
+          "z_m": 16.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z9.png"
+        },
+        {
+          "band": 12,
+          "z_m": 25.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z12.png"
+        },
+        {
+          "band": 17,
+          "z_m": 40.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z17.png"
+        },
+        {
+          "band": 23,
+          "z_m": 58.5,
+          "image": "/data/processed/envimet/mean_radiant_temp__z23.png"
+        }
+      ],
       "range": {
-        "min": 33.55,
-        "max": 75.65
+        "min": 20.0,
+        "max": 80.0
       },
+      "range_mode": "fixed",
       "observed": {
         "min": 26.1,
         "max": 80.44
@@ -439,28 +737,1822 @@
       ],
       "legend": [
         {
-          "value": 33.55,
+          "value": 20.0,
           "color": "#ffffb2"
         },
         {
-          "value": 41.97,
+          "value": 32.0,
           "color": "#fee182"
         },
         {
-          "value": 50.39,
+          "value": 44.0,
           "color": "#fec25d"
         },
         {
-          "value": 58.81,
+          "value": 56.0,
           "color": "#fea346"
         },
         {
-          "value": 67.23,
+          "value": 68.0,
           "color": "#f07138"
         },
         {
-          "value": 75.65,
+          "value": 80.0,
           "color": "#bd0026"
+        }
+      ]
+    },
+    {
+      "key": "objects",
+      "label": "Oggetti / edifici (maschera)",
+      "unit": "",
+      "image": "/data/processed/envimet/objects.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 1.0
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 1.0
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#440154"
+        },
+        {
+          "value": 0.2,
+          "color": "#3d4280"
+        },
+        {
+          "value": 0.4,
+          "color": "#2b788c"
+        },
+        {
+          "value": 0.6,
+          "color": "#39a77b"
+        },
+        {
+          "value": 0.8,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 1.0,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "flow_u",
+      "label": "Vento componente U (E-O)",
+      "unit": "m/s",
+      "image": "/data/processed/envimet/flow_u.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": -1.0,
+        "max": 0.11
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": -3.4,
+        "max": 1.79
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": -1.0,
+          "color": "#f7fbff"
+        },
+        {
+          "value": -0.78,
+          "color": "#bfdcef"
+        },
+        {
+          "value": -0.56,
+          "color": "#87bdde"
+        },
+        {
+          "value": -0.34,
+          "color": "#5795c1"
+        },
+        {
+          "value": -0.12,
+          "color": "#306296"
+        },
+        {
+          "value": 0.11,
+          "color": "#08306b"
+        }
+      ]
+    },
+    {
+      "key": "flow_v",
+      "label": "Vento componente V (N-S)",
+      "unit": "m/s",
+      "image": "/data/processed/envimet/flow_v.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": -0.12,
+        "max": 0.88
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": -1.39,
+        "max": 2.19
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": -0.12,
+          "color": "#f7fbff"
+        },
+        {
+          "value": 0.08,
+          "color": "#bfdcef"
+        },
+        {
+          "value": 0.28,
+          "color": "#87bdde"
+        },
+        {
+          "value": 0.48,
+          "color": "#5795c1"
+        },
+        {
+          "value": 0.68,
+          "color": "#306296"
+        },
+        {
+          "value": 0.88,
+          "color": "#08306b"
+        }
+      ]
+    },
+    {
+      "key": "flow_w",
+      "label": "Vento componente W (verticale)",
+      "unit": "m/s",
+      "image": "/data/processed/envimet/flow_w.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": -0.03,
+        "max": 0.05
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": -0.13,
+        "max": 0.26
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": -0.03,
+          "color": "#f7fbff"
+        },
+        {
+          "value": -0.02,
+          "color": "#bfdcef"
+        },
+        {
+          "value": -0.0,
+          "color": "#87bdde"
+        },
+        {
+          "value": 0.02,
+          "color": "#5795c1"
+        },
+        {
+          "value": 0.03,
+          "color": "#306296"
+        },
+        {
+          "value": 0.05,
+          "color": "#08306b"
+        }
+      ]
+    },
+    {
+      "key": "wind_speed",
+      "label": "Velocità del vento",
+      "unit": "m/s",
+      "image": "/data/processed/envimet/wind_speed.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 1.16
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 3.55
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#f7fbff"
+        },
+        {
+          "value": 0.23,
+          "color": "#bfdcef"
+        },
+        {
+          "value": 0.47,
+          "color": "#87bdde"
+        },
+        {
+          "value": 0.7,
+          "color": "#5795c1"
+        },
+        {
+          "value": 0.93,
+          "color": "#306296"
+        },
+        {
+          "value": 1.16,
+          "color": "#08306b"
+        }
+      ]
+    },
+    {
+      "key": "wind_speed_change",
+      "label": "Variazione velocità vento",
+      "unit": "%",
+      "image": "/data/processed/envimet/wind_speed_change.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 103.38
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 315.06
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#2166ac"
+        },
+        {
+          "value": 20.68,
+          "color": "#77a0ca"
+        },
+        {
+          "value": 41.35,
+          "color": "#ccdae8"
+        },
+        {
+          "value": 62.03,
+          "color": "#e9cace"
+        },
+        {
+          "value": 82.7,
+          "color": "#ce717d"
+        },
+        {
+          "value": 103.38,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "wind_direction",
+      "label": "Direzione del vento",
+      "unit": "deg",
+      "image": "/data/processed/envimet/wind_direction.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 7.92,
+        "max": 351.0
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 359.99
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 7.92,
+          "color": "#440154"
+        },
+        {
+          "value": 76.53,
+          "color": "#3d4280"
+        },
+        {
+          "value": 145.15,
+          "color": "#2b788c"
+        },
+        {
+          "value": 213.77,
+          "color": "#39a77b"
+        },
+        {
+          "value": 282.38,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 351.0,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "pressure_perturbation",
+      "label": "Perturbazione di pressione",
+      "unit": "dPa",
+      "image": "/data/processed/envimet/pressure_perturbation.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": -4.61,
+        "max": 1.71
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": -7.41,
+        "max": 11.33
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": -4.61,
+          "color": "#2166ac"
+        },
+        {
+          "value": -3.34,
+          "color": "#77a0ca"
+        },
+        {
+          "value": -2.08,
+          "color": "#ccdae8"
+        },
+        {
+          "value": -0.81,
+          "color": "#e9cace"
+        },
+        {
+          "value": 0.45,
+          "color": "#ce717d"
+        },
+        {
+          "value": 1.71,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "air_temperature_delta",
+      "label": "Δ Temperatura aria",
+      "unit": "K",
+      "image": "/data/processed/envimet/air_temperature_delta.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": -0.78,
+        "max": 2.18
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": -2.85,
+        "max": 3.32
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": -0.78,
+          "color": "#2166ac"
+        },
+        {
+          "value": -0.19,
+          "color": "#77a0ca"
+        },
+        {
+          "value": 0.4,
+          "color": "#ccdae8"
+        },
+        {
+          "value": 0.99,
+          "color": "#e9cace"
+        },
+        {
+          "value": 1.59,
+          "color": "#ce717d"
+        },
+        {
+          "value": 2.18,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "air_temperature_change",
+      "label": "Variazione temperatura aria",
+      "unit": "K/h",
+      "image": "/data/processed/envimet/air_temperature_change.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.18,
+        "max": 1.89
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.08,
+        "max": 3.66
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.18,
+          "color": "#2166ac"
+        },
+        {
+          "value": 0.52,
+          "color": "#77a0ca"
+        },
+        {
+          "value": 0.86,
+          "color": "#ccdae8"
+        },
+        {
+          "value": 1.21,
+          "color": "#e9cace"
+        },
+        {
+          "value": 1.55,
+          "color": "#ce717d"
+        },
+        {
+          "value": 1.89,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "specific_humidity",
+      "label": "Umidità specifica",
+      "unit": "g/kg",
+      "image": "/data/processed/envimet/specific_humidity.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 11.73,
+        "max": 13.11
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 11.69,
+        "max": 13.67
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 11.73,
+          "color": "#f7fbff"
+        },
+        {
+          "value": 12.01,
+          "color": "#bfdcef"
+        },
+        {
+          "value": 12.28,
+          "color": "#87bdde"
+        },
+        {
+          "value": 12.56,
+          "color": "#5795c1"
+        },
+        {
+          "value": 12.84,
+          "color": "#306296"
+        },
+        {
+          "value": 13.11,
+          "color": "#08306b"
+        }
+      ]
+    },
+    {
+      "key": "tke",
+      "label": "Turbolenza (TKE)",
+      "unit": "m²/m³",
+      "image": "/data/processed/envimet/tke.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 9.22
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 13.41
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#440154"
+        },
+        {
+          "value": 1.84,
+          "color": "#3d4280"
+        },
+        {
+          "value": 3.69,
+          "color": "#2b788c"
+        },
+        {
+          "value": 5.53,
+          "color": "#39a77b"
+        },
+        {
+          "value": 7.37,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 9.22,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "tke_dissipation",
+      "label": "Dissipazione turbolenza",
+      "unit": "m³/m³",
+      "image": "/data/processed/envimet/tke_dissipation.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 0.57
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 1.4
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#440154"
+        },
+        {
+          "value": 0.11,
+          "color": "#3d4280"
+        },
+        {
+          "value": 0.23,
+          "color": "#2b788c"
+        },
+        {
+          "value": 0.34,
+          "color": "#39a77b"
+        },
+        {
+          "value": 0.46,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 0.57,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "vertical_exchange_coef_impuls",
+      "label": "Coeff. scambio verticale",
+      "unit": "m²/s",
+      "image": "/data/processed/envimet/vertical_exchange_coef_impuls.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 27.38
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 34.25
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#2166ac"
+        },
+        {
+          "value": 5.48,
+          "color": "#77a0ca"
+        },
+        {
+          "value": 10.95,
+          "color": "#ccdae8"
+        },
+        {
+          "value": 16.43,
+          "color": "#e9cace"
+        },
+        {
+          "value": 21.91,
+          "color": "#ce717d"
+        },
+        {
+          "value": 27.38,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "horizontal_exchange_coef_impuls",
+      "label": "Coeff. scambio orizzontale",
+      "unit": "m²/s",
+      "image": "/data/processed/envimet/horizontal_exchange_coef_impuls.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 27.38
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 34.25
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#2166ac"
+        },
+        {
+          "value": 5.48,
+          "color": "#77a0ca"
+        },
+        {
+          "value": 10.95,
+          "color": "#ccdae8"
+        },
+        {
+          "value": 16.43,
+          "color": "#e9cace"
+        },
+        {
+          "value": 21.91,
+          "color": "#ce717d"
+        },
+        {
+          "value": 27.38,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "local_mixing_length",
+      "label": "Lunghezza di mescolamento",
+      "unit": "m",
+      "image": "/data/processed/envimet/local_mixing_length.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 16.96
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 19.55
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#440154"
+        },
+        {
+          "value": 3.39,
+          "color": "#3d4280"
+        },
+        {
+          "value": 6.78,
+          "color": "#2b788c"
+        },
+        {
+          "value": 10.17,
+          "color": "#39a77b"
+        },
+        {
+          "value": 13.56,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 16.96,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "tke_normalised_1d",
+      "label": "TKE normalizzata",
+      "unit": "",
+      "image": "/data/processed/envimet/tke_normalised_1d.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 102.11
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 148.59
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#440154"
+        },
+        {
+          "value": 20.42,
+          "color": "#3d4280"
+        },
+        {
+          "value": 40.85,
+          "color": "#2b788c"
+        },
+        {
+          "value": 61.27,
+          "color": "#39a77b"
+        },
+        {
+          "value": 81.69,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 102.11,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "dissipation_normalised_1d",
+      "label": "Dissipazione normalizzata",
+      "unit": "",
+      "image": "/data/processed/envimet/dissipation_normalised_1d.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 78.71
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 193.45
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#440154"
+        },
+        {
+          "value": 15.74,
+          "color": "#3d4280"
+        },
+        {
+          "value": 31.48,
+          "color": "#2b788c"
+        },
+        {
+          "value": 47.23,
+          "color": "#39a77b"
+        },
+        {
+          "value": 62.97,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 78.71,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "km_normalised_1d",
+      "label": "Km normalizzato",
+      "unit": "",
+      "image": "/data/processed/envimet/km_normalised_1d.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 220.96
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 276.4
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#440154"
+        },
+        {
+          "value": 44.19,
+          "color": "#3d4280"
+        },
+        {
+          "value": 88.38,
+          "color": "#2b788c"
+        },
+        {
+          "value": 132.58,
+          "color": "#39a77b"
+        },
+        {
+          "value": 176.77,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 220.96,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "tke_mechanical_turbulence_prod",
+      "label": "Produzione turbolenza meccanica",
+      "unit": "",
+      "image": "/data/processed/envimet/tke_mechanical_turbulence_prod.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 0.21
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 3.0
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#440154"
+        },
+        {
+          "value": 0.04,
+          "color": "#3d4280"
+        },
+        {
+          "value": 0.08,
+          "color": "#2b788c"
+        },
+        {
+          "value": 0.12,
+          "color": "#39a77b"
+        },
+        {
+          "value": 0.16,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 0.21,
+          "color": "#fde725"
+        }
+      ]
+    },
+    {
+      "key": "co2",
+      "label": "CO₂ (qualità aria)",
+      "unit": "mg/m3",
+      "image": "/data/processed/envimet/co2.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 809.75,
+        "max": 810.0
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 808.95,
+        "max": 810.0
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 809.75,
+          "color": "#f7fcf5"
+        },
+        {
+          "value": 809.8,
+          "color": "#c3e6c2"
+        },
+        {
+          "value": 809.85,
+          "color": "#8ecf8f"
+        },
+        {
+          "value": 809.9,
+          "color": "#5daa64"
+        },
+        {
+          "value": 809.95,
+          "color": "#2e773f"
+        },
+        {
+          "value": 810.0,
+          "color": "#00441b"
+        }
+      ]
+    },
+    {
+      "key": "co2_2",
+      "label": "CO₂ (2)",
+      "unit": "ppm",
+      "image": "/data/processed/envimet/co2_2.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 450.0
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 450.0
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#f7fcf5"
+        },
+        {
+          "value": 90.0,
+          "color": "#c3e6c2"
+        },
+        {
+          "value": 180.0,
+          "color": "#8ecf8f"
+        },
+        {
+          "value": 270.0,
+          "color": "#5daa64"
+        },
+        {
+          "value": 360.0,
+          "color": "#2e773f"
+        },
+        {
+          "value": 450.0,
+          "color": "#00441b"
+        }
+      ]
+    },
+    {
+      "key": "plant_co2_flux",
+      "label": "Flusso CO₂ vegetazione",
+      "unit": "mg/m²s",
+      "image": "/data/processed/envimet/plant_co2_flux.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 0.0,
+        "max": 0.0
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 0.0,
+        "max": 0.0
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#2166ac"
+        },
+        {
+          "value": 0.0,
+          "color": "#77a0ca"
+        },
+        {
+          "value": 0.0,
+          "color": "#ccdae8"
+        },
+        {
+          "value": 0.0,
+          "color": "#e9cace"
+        },
+        {
+          "value": 0.0,
+          "color": "#ce717d"
+        },
+        {
+          "value": 0.0,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "div_lw_radiation_temp_change",
+      "label": "Variazione T da radiazione IR",
+      "unit": "K/h",
+      "image": "/data/processed/envimet/div_lw_radiation_temp_change.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": -4.6,
+        "max": 14.29
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": -8.99,
+        "max": 20.13
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": -4.6,
+          "color": "#2166ac"
+        },
+        {
+          "value": -0.82,
+          "color": "#77a0ca"
+        },
+        {
+          "value": 2.96,
+          "color": "#ccdae8"
+        },
+        {
+          "value": 6.73,
+          "color": "#e9cace"
+        },
+        {
+          "value": 10.51,
+          "color": "#ce717d"
+        },
+        {
+          "value": 14.29,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "natural_convection_velocity",
+      "label": "Velocità convezione naturale",
+      "unit": "m/s",
+      "image": "/data/processed/envimet/natural_convection_velocity.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": -0.0,
+        "max": 0.01
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": -0.01,
+        "max": 0.01
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": -0.0,
+          "color": "#2166ac"
+        },
+        {
+          "value": -0.0,
+          "color": "#77a0ca"
+        },
+        {
+          "value": 0.0,
+          "color": "#ccdae8"
+        },
+        {
+          "value": 0.0,
+          "color": "#e9cace"
+        },
+        {
+          "value": 0.0,
+          "color": "#ce717d"
+        },
+        {
+          "value": 0.01,
+          "color": "#b2182b"
+        }
+      ]
+    },
+    {
+      "key": "building_number",
+      "label": "Numero edificio (maschera)",
+      "unit": "",
+      "image": "/data/processed/envimet/building_number.png",
+      "values": "",
+      "curated": false,
+      "z_band": 2,
+      "heights": [],
+      "range": {
+        "min": 21.0,
+        "max": 1352.2
+      },
+      "range_mode": "percentile",
+      "observed": {
+        "min": 1.0,
+        "max": 1386.0
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 21.0,
+          "color": "#440154"
+        },
+        {
+          "value": 287.24,
+          "color": "#3d4280"
+        },
+        {
+          "value": 553.48,
+          "color": "#2b788c"
+        },
+        {
+          "value": 819.72,
+          "color": "#39a77b"
+        },
+        {
+          "value": 1085.96,
+          "color": "#7ecf56"
+        },
+        {
+          "value": 1352.2,
+          "color": "#fde725"
         }
       ]
     }
