@@ -763,6 +763,121 @@
       ]
     },
     {
+      "key": "wind_speed",
+      "label": "Velocità del vento",
+      "unit": "m/s",
+      "image": "/data/processed/envimet/wind_speed.png",
+      "values": "/data/processed/envimet/wind_speed.values.json",
+      "curated": true,
+      "z_band": 2,
+      "heights": [
+        {
+          "band": 2,
+          "z_m": 1.5,
+          "image": "/data/processed/envimet/wind_speed__z2.png"
+        },
+        {
+          "band": 5,
+          "z_m": 4.5,
+          "image": "/data/processed/envimet/wind_speed__z5.png"
+        },
+        {
+          "band": 6,
+          "z_m": 7.5,
+          "image": "/data/processed/envimet/wind_speed__z6.png"
+        },
+        {
+          "band": 7,
+          "z_m": 10.5,
+          "image": "/data/processed/envimet/wind_speed__z7.png"
+        },
+        {
+          "band": 8,
+          "z_m": 13.5,
+          "image": "/data/processed/envimet/wind_speed__z8.png"
+        },
+        {
+          "band": 9,
+          "z_m": 16.5,
+          "image": "/data/processed/envimet/wind_speed__z9.png"
+        },
+        {
+          "band": 12,
+          "z_m": 25.5,
+          "image": "/data/processed/envimet/wind_speed__z12.png"
+        },
+        {
+          "band": 17,
+          "z_m": 40.5,
+          "image": "/data/processed/envimet/wind_speed__z17.png"
+        },
+        {
+          "band": 23,
+          "z_m": 58.5,
+          "image": "/data/processed/envimet/wind_speed__z23.png"
+        }
+      ],
+      "range": {
+        "min": 0.0,
+        "max": 6.0
+      },
+      "range_mode": "fixed",
+      "observed": {
+        "min": 0.0,
+        "max": 3.55
+      },
+      "bounds": {
+        "west": 11.3340257,
+        "south": 44.4975554,
+        "east": 11.3455146,
+        "north": 44.5061926
+      },
+      "coordinates": [
+        [
+          11.3455146,
+          44.5047619
+        ],
+        [
+          11.3361821,
+          44.5061926
+        ],
+        [
+          11.3340257,
+          44.4989859
+        ],
+        [
+          11.3433571,
+          44.4975554
+        ]
+      ],
+      "legend": [
+        {
+          "value": 0.0,
+          "color": "#f7fbff"
+        },
+        {
+          "value": 1.2,
+          "color": "#bfdcef"
+        },
+        {
+          "value": 2.4,
+          "color": "#87bdde"
+        },
+        {
+          "value": 3.6,
+          "color": "#5795c1"
+        },
+        {
+          "value": 4.8,
+          "color": "#306296"
+        },
+        {
+          "value": 6.0,
+          "color": "#08306b"
+        }
+      ]
+    },
+    {
       "key": "objects",
       "label": "Oggetti / edifici (maschera)",
       "unit": "",
@@ -1034,75 +1149,6 @@
         },
         {
           "value": 0.05,
-          "color": "#08306b"
-        }
-      ]
-    },
-    {
-      "key": "wind_speed",
-      "label": "Velocità del vento",
-      "unit": "m/s",
-      "image": "/data/processed/envimet/wind_speed.png",
-      "values": "",
-      "curated": false,
-      "z_band": 2,
-      "heights": [],
-      "range": {
-        "min": 0.0,
-        "max": 1.16
-      },
-      "range_mode": "percentile",
-      "observed": {
-        "min": 0.0,
-        "max": 3.55
-      },
-      "bounds": {
-        "west": 11.3340257,
-        "south": 44.4975554,
-        "east": 11.3455146,
-        "north": 44.5061926
-      },
-      "coordinates": [
-        [
-          11.3455146,
-          44.5047619
-        ],
-        [
-          11.3361821,
-          44.5061926
-        ],
-        [
-          11.3340257,
-          44.4989859
-        ],
-        [
-          11.3433571,
-          44.4975554
-        ]
-      ],
-      "legend": [
-        {
-          "value": 0.0,
-          "color": "#f7fbff"
-        },
-        {
-          "value": 0.23,
-          "color": "#bfdcef"
-        },
-        {
-          "value": 0.47,
-          "color": "#87bdde"
-        },
-        {
-          "value": 0.7,
-          "color": "#5795c1"
-        },
-        {
-          "value": 0.93,
-          "color": "#306296"
-        },
-        {
-          "value": 1.16,
           "color": "#08306b"
         }
       ]

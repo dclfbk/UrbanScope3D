@@ -17,8 +17,18 @@ export type RGB = [number, number, number]
 export const BOLOGNA_RED: RGB = [158, 42, 43]
 export const BOLOGNA_RED_DARK: RGB = [98, 23, 8] // Pantone ~7616 C
 
+// Tetti "alla bolognese": terracotta/coppo. Rosso-terra piu' saturo e caldo:
+// [201,96,74] virava al salmone slavato accanto alle pareti chiare. Usato solo
+// dallo shader dei tetti (RoofTopColorExtension); il BOLOGNA_RED resta per i
+// blocchi quartiere. Scelta utente: "case piu' belle, niente tinte slavate".
+export const BOLOGNA_ROOF: RGB = [183, 81, 58]
+
 // Ocra/sabbia delle facciate del centro storico (Pantone ~7508 C / ~7507 C).
-export const BOLOGNA_OCRA: RGB = [212, 165, 116]
+// Ocra GIALLO-DORATA calda: [226,198,164] era un beige-grigio spento ("fangoso"
+// slavato). Questo tono e' piu' caldo/saturo e si sposa col terracotta dei
+// tetti. Lo shader tetti scala in luminanza su questa costante (vedi
+// RoofTopColorExtension), quindi varia la base = varia anche il tetto.
+export const BOLOGNA_OCRA: RGB = [221, 184, 131]
 export const BOLOGNA_SAND: RGB = [232, 220, 196]
 
 // Sangiovese: rosso scuro vinoso, per accenti e bordi.

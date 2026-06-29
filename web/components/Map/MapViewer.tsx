@@ -13,7 +13,6 @@ import {
 } from '@deck.gl/core'
 import {
   GeoJsonLayer,
-  ColumnLayer,
   ScatterplotLayer,
   TextLayer,
   BitmapLayer,
@@ -22,7 +21,6 @@ import { SimpleMeshLayer } from '@deck.gl/mesh-layers'
 import { Geometry } from '@luma.gl/engine'
 import { getSunPosition, toMapLibreLight } from '@/lib/sun'
 import { computeSky, nightFactor } from '@/lib/sky'
-import { buildWindSampler, type WindSampler } from '@/lib/wind'
 import { buildEnvimetSampler, type EnvimetSampler } from '@/lib/envimet'
 import { t, type Lang, type StringKey } from '@/lib/i18n'
 import TimeSlider from '@/components/UI/TimeSlider'
@@ -33,6 +31,7 @@ import {
   BOLOGNA_FOREST_DARK,
   BOLOGNA_OCRA,
   BOLOGNA_RED,
+  BOLOGNA_ROOF,
   BOLOGNA_SANGIOVESE,
   toCss,
   withAlpha,
@@ -43,8 +42,6 @@ import {
 // sono caricati dinamicamente da overlays.json e gestiti in `envVisible`
 // (Record per `key`), non nel record `visibility` tipizzato sotto.
 type LayerKey =
-  | 'land-use'
-  | 'buildings-particellari'
   | 'buildings-3d'
   | 'shadows'
   | 'buildings-temp'
@@ -54,10 +51,9 @@ type LayerKey =
   | 'parks'
   | 'private-green'
   | 'air-stations'
-  | 'wind'
   | 'noise'
 
-type CategoryKey = 'edifici' | 'verde' | 'ambiente' | 'microclima' | 'territorio'
+type CategoryKey = 'edifici' | 'verde' | 'ambiente' | 'microclima'
 
 // Un overlay ENVI-met: PNG georeferenziato su 4 angoli (dominio ruotato) +
 // range/legenda per la UI. Caricato da envimet/overlays.json.
@@ -112,9 +108,10 @@ const CATEGORIES: {
 }[] = [
   { key: 'edifici', labelKey: 'cat_edifici', defaultOpen: true },
   { key: 'verde', labelKey: 'cat_verde', defaultOpen: true },
-  { key: 'ambiente', labelKey: 'cat_ambiente', defaultOpen: false },
+  // Microclima PRIMA di Ambiente (richiesta utente): e' il cuore del progetto.
   { key: 'microclima', labelKey: 'cat_microclima', defaultOpen: false },
-  { key: 'territorio', labelKey: 'cat_territorio', defaultOpen: false },
+  { key: 'ambiente', labelKey: 'cat_ambiente', defaultOpen: false },
+  // (Categoria 'territorio' / uso del suolo RIMOSSA su richiesta utente.)
 ]
 
 // rawLabel: etichetta diretta (non i18n) per i layer ENVI-met, che prendono
@@ -131,8 +128,10 @@ const LAYERS: {
   { id: 'arredo', labelKey: 'layer_arredo', default: false, category: 'edifici' },
   // (Ombre temporaneamente rimosse dal pannello su richiesta: il layer/logica
   // restano nel codice, ma niente toggle -> ombre off.)
-  { id: 'buildings-particellari', labelKey: 'layer_buildings_2d', default: false, category: 'edifici' },
-  { id: 'buildings-temp', labelKey: 'layer_buildings_temp', default: false, category: 'edifici' },
+  // (Layer "Edifici footprint 2D" RIMOSSO dal pannello su richiesta utente.)
+  // "Temperatura degli edifici": dato ENVI-met -> sta nella categoria
+  // 'microclima' (reso a mano nel branch microclima, non nella lista generica).
+  { id: 'buildings-temp', labelKey: 'layer_buildings_temp', default: false, category: 'microclima' },
   // Aree verdi + verde privato ON di default. Alberi OFF di default (~100k
   // istanze: l'utente li accende quando servono).
   // (Layer "parks" rimosso: stesso dataset di green-areas, ridondante.)
@@ -140,11 +139,11 @@ const LAYERS: {
   { id: 'green-areas', labelKey: 'layer_green', default: true, category: 'verde' },
   { id: 'private-green', labelKey: 'layer_private_green', default: true, category: 'verde' },
   { id: 'air-stations', labelKey: 'layer_air', default: false, category: 'ambiente' },
-  { id: 'wind', labelKey: 'layer_wind', default: false, category: 'ambiente' },
+  // (Layer "Velocità vento" 2D RIMOSSO: era un singolo PNG a ~0.3 m. Il vento
+  // ora è solo il dato 3D `wind_speed` in Microclima, con quote/slider.)
   { id: 'noise', labelKey: 'layer_noise', default: false, category: 'ambiente' },
   // (Gli overlay microclima ENVI-met sono dinamici: vedi categoria 'microclima'
   // resa da `envimetOverlays` + stato `envVisible`.)
-  { id: 'land-use', labelKey: 'layer_landuse', default: false, category: 'territorio' },
 ]
 
 // URL del meta unico degli overlay ENVI-met.
@@ -174,6 +173,13 @@ function formatEnvDate(source: string | null, lang: 'it' | 'en'): string | null 
     ? `${day} ${ENV_MONTHS_IT[mi]} ${y}, ore ${hm}`
     : `${day} ${ENV_MONTHS_EN[mi]} ${y}, ${hm}`
 }
+
+// Mostrare o no il sotto-gruppo "Dati tecnici" del microclima (le ~30 variabili
+// ENVI-met grezze oltre ai 7 dati curati). Di DEFAULT false: il sito e' per i
+// cittadini, vedono solo i 7 dati chiari. Per RIATTIVARE i dati tecnici metti
+// `true` qui (ricompaiono in fondo al gruppo Microclima, in un menu a scomparsa).
+// Vedi documentation/12_envimet-aggiungere-dati.md §7.
+const SHOW_TECHNICAL_ENVIMET = false
 
 // Descrizioni INTUITIVE (per cittadini, non tecnici) di ogni dato microclima
 // ENVI-met. Mostrate nella legenda quando l'overlay e' attivo. Chiave = `key`
@@ -206,6 +212,10 @@ const ENV_DESC: Record<string, { it: string; en: string }> = {
   vegetation_lad: {
     it: 'Quanto è fitta la chioma degli alberi: più è alta, più ombra e frescura regala il verde.',
     en: 'How dense the tree canopy is: the higher it is, the more shade and cooling the greenery gives.',
+  },
+  wind_speed: {
+    it: 'Quanto soffia il vento. In strada è più debole, salendo con lo slider cresce: il vento porta via il caldo e rinfresca.',
+    en: 'How strong the wind blows. It is weaker at street level and grows as you raise the slider: wind carries heat away and cools things down.',
   },
 }
 
@@ -259,7 +269,6 @@ const BUILDINGS_HEIGHTS_URL = withBase('/data/processed/buildings_heights.geojso
 // decompressi. Quindi usiamo questa stima fissa e fermiamo la barra a 99%
 // finche' il parse non e' davvero finito.
 const BUILDINGS_BYTES_EST = 32_400_000
-const WIND_META_URL = withBase('/data/processed/wind_overlay.json')
 // Alberi UFFICIALI del Comune (dataset "alberi-manutenzioni", con specie):
 // sorgente primaria. Fallback agli OSM, poi al DBTR. Vedi
 // scripts/download_bologna_assets.py.
@@ -302,7 +311,6 @@ const TERRAIN_EXAGGERATION = 1
 // per "salire" sopra il terreno (effetto foglio che sale). Esagerazione = 1,
 // quindi i metri deck combaciano col terreno MapLibre.
 const ENV_GROUND_ELEV = 56.9
-const LANDUSE_URL = withBase('/data/4)LandUse-GroundSurface/4.1_uso_suolo_2020_ed2023_aoi.geojson')
 const GREEN_URL = withBase('/data/green.geojson')
 const PRIVATE_GREEN_URL = withBase('/data/2)Vegetation/2.2_Verde_Privato_Urbanizzato.geojson')
 // URL pubblico (GitHub Pages) usato nella condivisione: in locale
@@ -398,25 +406,13 @@ const tintBasemapBackground = (map: maplibregl.Map, id: BasemapId) => {
   }
 }
 
-type WindOverlay = {
-  png: string
-  coordinates: [
-    [number, number],
-    [number, number],
-    [number, number],
-    [number, number],
-  ]
-  bounds: { west: number; south: number; east: number; north: number }
-  range: { min: number; max: number }
-}
-
 const AOI_CENTER: [number, number] = [11.343720439501553, 44.49989258707834]
 const DEFAULT_BUILDING_HEIGHT = 15
 
 // Albero stilizzato: tronco cilindrico + chioma. Due forme di chioma generate
 // proceduralmente (nessun asset esterno): coni sovrapposti per le conifere,
-// sfera per le latifoglie. La forma si sceglie dal tag OSM leaf_type.
-const TRUNK_RADIUS = 0.32
+// sfera per le latifoglie. La forma si sceglie dal tag OSM leaf_type. Il raggio
+// del tronco e' proporzionale all'altezza (vedi trunkRadiusOf).
 
 // Mesh di un alberello a 3 tier conici, asse su +Z (base z=0, apice z~1.3).
 // Plain mesh {positions, normals, indices} cosi' deck.gl SimpleMeshLayer lo
@@ -707,6 +703,13 @@ const PLACED_TREE_CANOPY = meshOf((P, N, I) => {
 const PLACED_SHRUB_MESH = meshOf((P, N, I) => {
   addSphere(P, N, I, 0, 0, 0.5, 0.62, 1.15)
 })
+// Tronco UNITARIO (raggio 1, altezza 1, z 0..1) leggermente rastremato verso
+// l'alto. Lo scaliamo per-albero in [raggio, raggio, altezzaTronco] cosi' il
+// fusto e' piu' grosso per gli alberi piu' alti (vedi trunkRadiusOf). 7 lati =
+// stesso look "a faccette" del vecchio ColumnLayer (diskResolution 6).
+const TRUNK_MESH = meshOf((P, N, I) => {
+  addCyl(P, N, I, 0, 0, 0, 1, 1, 0.78, 7)
+})
 
 // Proprietà grezze dell'albero dal GeoJSON sorgente (tag OSM: genus, species,
 // genus:it, leaf_type, leaf_cycle, height, ...). Usate dal popup info e per
@@ -821,6 +824,14 @@ function treeHeightM(d: TreePoint): number {
 }
 function trunkHeightOf(d: TreePoint): number {
   return Math.max(1.5, treeHeightM(d) * 0.28)
+}
+// Raggio del tronco PROPORZIONALE all'altezza dell'albero: un platano di 25 m
+// ha un fusto ben piu' grosso di un prunus di 6 m. Fattore ~0.02 (un albero di
+// ~16 m -> ~0.32 m, come il vecchio raggio fisso), con clamp per non avere
+// stecchini ne' tronchi sproporzionati. Piccolo jitter per seed per varieta'.
+function trunkRadiusOf(d: TreePoint): number {
+  const r = treeHeightM(d) * 0.02 * (0.9 + d.seed * 0.2)
+  return Math.max(0.12, Math.min(0.65, r))
 }
 
 // Colore dell'ombra proiettata (RGBA 0..1). Alpha 0 = ombra invisibile.
@@ -1133,13 +1144,28 @@ function buildShadowBuildingsLayer(
   if (!visible || data == null) return null
   // Edifici PIENI (alpha 255): niente facciate semitrasparenti da cui si
   // intravede il terreno/le case dietro.
-  const ocra = withAlpha(BOLOGNA_OCRA, 255) as [number, number, number, number]
   const lineBase = withAlpha(BOLOGNA_SANGIOVESE, 255) as [
     number,
     number,
     number,
     number,
   ]
+  // Variazione di LUMINANZA per-edificio: una citta' tutta dello stesso ocra
+  // piatto sembra finta. Moltiplichiamo l'ocra per un fattore deterministico
+  // (hash del centroide -> ~0.86..1.12) cosi' ogni casa e' un po' piu' chiara o
+  // scura, come le facciate vere. IMPORTANTE: e' un fattore scalare sul SOLO
+  // ocra, quindi lo shader tetti (lit = color/ocra; tetto = ROOF*lit) scala il
+  // tetto dello STESSO fattore -> facciata e tetto restano coerenti.
+  const ocraVaried = (f: BuildingFeature): [number, number, number, number] => {
+    const [cx, cy] = featureCentroid(f as unknown as Centroidable)
+    const k = 0.86 + hashSeed(cx, cy) * 0.26
+    return [
+      Math.min(255, Math.round(BOLOGNA_OCRA[0] * k)),
+      Math.min(255, Math.round(BOLOGNA_OCRA[1] * k)),
+      Math.min(255, Math.round(BOLOGNA_OCRA[2] * k)),
+      255,
+    ]
+  }
   const baseColor = (f: BuildingFeature): [number, number, number, number] => {
     if (tempRange) {
       const tC = pedestrianMrt(f.properties?.mrt_col)
@@ -1148,7 +1174,7 @@ function buildShadowBuildingsLayer(
       const tNorm = (tC - tempRange.min) / (tempRange.max - tempRange.min || 1)
       return [...ylOrRd(tNorm), 255] as [number, number, number, number]
     }
-    return ocra
+    return ocraVaried(f)
   }
   return new GeoJsonLayer({
     id: 'buildings-shadow',
@@ -1228,7 +1254,7 @@ class RoofTopColorExtension extends LayerExtension {
           if (geometry.normal.z > 0.5) {
             vec3 ocra = ${glslRGB(BOLOGNA_OCRA)};
             vec3 lit = color.rgb / max(ocra, vec3(0.001));
-            color.rgb = clamp(${glslRGB(BOLOGNA_RED)} * lit, 0.0, 1.0);
+            color.rgb = clamp(${glslRGB(BOLOGNA_ROOF)} * lit, 0.0, 1.0);
           }
         `,
       },
@@ -1244,12 +1270,13 @@ function buildTreesLayers(
   data: TreePoint[] | null,
 ): Layer[] {
   if (!visible || !data || data.length === 0) return []
-  const trunk = new ColumnLayer<TreePoint>({
+  // Tronco come SimpleMeshLayer (non ColumnLayer): ci serve un RAGGIO per-albero
+  // (proporzionale all'altezza) e il ColumnLayer ha un solo `radius` fisso per
+  // tutta la collezione. getScale [r, r, h] scala il tronco unitario.
+  const trunk = new SimpleMeshLayer<TreePoint>({
     id: 'trees-trunk',
     data,
-    diskResolution: 6,
-    radius: TRUNK_RADIUS,
-    extruded: true,
+    mesh: TRUNK_MESH,
     pickable: true,
     // Gli alberi NON entrano nello shadow pass: con 100k+ istanze raddoppiare
     // il rendering nella shadow map li rendeva lentissimi (e le ombre degli
@@ -1258,8 +1285,11 @@ function buildTreesLayers(
     // @ts-expect-error deck.gl runtime prop assente dai types
     shadowEnabled: false,
     getPosition: (d) => d.position,
-    getElevation: trunkHeightOf,
-    getFillColor: [82, 58, 38, 255],
+    getScale: (d) => {
+      const r = trunkRadiusOf(d)
+      return [r, r, trunkHeightOf(d)]
+    },
+    getColor: [82, 58, 38, 255],
     material: {
       ambient: 0.45,
       diffuse: 0.7,
@@ -1324,12 +1354,12 @@ function buildTreesLayers(
   const layers: Layer[] = [trunk]
   if (conifers.length) {
     layers.push(
-      makeCanopy('trees-canopy-conifer', conifers, CONIFER_MESH, CONIFER_ZMAX, 'conifer', 0.16, 1.0, 3.5),
+      makeCanopy('trees-canopy-conifer', conifers, CONIFER_MESH, CONIFER_ZMAX, 'conifer', 0.18, 0.9, 4.5),
     )
   }
   if (broadleaves.length) {
     layers.push(
-      makeCanopy('trees-canopy-broadleaf', broadleaves, BROADLEAF_MESH, BROADLEAF_ZMAX, 'broadleaf', 0.26, 1.3, 5.5),
+      makeCanopy('trees-canopy-broadleaf', broadleaves, BROADLEAF_MESH, BROADLEAF_ZMAX, 'broadleaf', 0.30, 1.1, 7.0),
     )
   }
   return layers
@@ -1910,14 +1940,11 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // air_temp dell'edificio sotto l'ultimo click (null = nessun edificio o fuori
   // dominio ENVI-met). Usato dal pannello del punto in modalita' temperatura.
   const probeBuildingTempRef = useRef<number | null>(null)
-  // Valori campionati al punto cliccato, derivati da `probe` + layer attivi:
-  // vento solo se il layer 'wind' e' acceso, microclima per ogni overlay
-  // ENVI-met spuntato.
-  const [pointWind, setPointWind] = useState<number | null>(null)
+  // Valori campionati al punto cliccato, derivati da `probe` + overlay
+  // microclima ENVI-met spuntati.
   const [pointEnv, setPointEnv] = useState<
     { key: string; label: string; unit: string; value: number | null }[]
   >([])
-  const windSamplerRef = useRef<WindSampler | null>(null)
   // Sampler ENVI-met per variabile (lazy: caricati quando l'overlay e'
   // acceso). `requested` evita fetch doppi; `samplersReady` ri-triggera il
   // calcolo dei valori quando un sampler finisce di caricare.
@@ -1939,8 +1966,6 @@ export default function MapViewer({ lang }: MapViewerProps) {
   const [buildingsUrl, setBuildingsUrl] = useState<string>(
     BUILDINGS_HEIGHTS_URL,
   )
-  const [windOverlay, setWindOverlay] = useState<WindOverlay | null>(null)
-  const windAddedRef = useRef(false)
   // Id corrente del layer/sorgente env-overlay (univoco per quota): serve per
   // rimuovere quello precedente quando cambia l'immagine (vedi effect overlay).
   const envOverlayIdRef = useRef<string | null>(null)
@@ -1954,29 +1979,36 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // record `visibility` tipizzato. UNO alla volta: accenderne uno azzera gli
   // altri. Chiave = `key` dell'overlay.
   const [envVisible, setEnvVisible] = useState<Record<string, boolean>>({})
-  // Inquadra il dominio dei dati ENVI-met DALL'ALTO (pitch 0), così quando si
-  // attiva un overlay microclima O gli "Edifici → temperatura" la camera ci va
-  // sopra e l'utente vede subito il quadrato senza cercarlo. Tutti gli overlay
-  // condividono lo stesso dominio -> uso il primo per i bounds.
+  // Inquadra il dominio dei dati ENVI-met con una vista OBLIQUA (pitch ~50°),
+  // così quando si attiva un overlay microclima O gli "Edifici → temperatura"
+  // la camera ci va sopra in diagonale: il "foglio" del dato alle varie quote si
+  // legge in 3D (prima era una vista piatta dall'alto, richiesta utente). Tutti
+  // gli overlay condividono lo stesso dominio -> uso il primo per i bounds.
   const flyToEnvDomain = () => {
     const ov = (envimetOverlays ?? [])[0]
     const b = ov?.bounds
     const map = mapRef.current
     if (!b || !map) return
-    map.fitBounds(
+    // fitBounds non accetta pitch ≠ 0 nel calcolo: prima inquadro il dominio a
+    // piatto per ricavare centro/zoom, poi easeTo con il pitch obliquo.
+    const cam = map.cameraForBounds(
       [
         [b.west, b.south],
         [b.east, b.north],
       ],
-      {
-        padding: { top: 90, bottom: 120, left: 70, right: 70 },
-        pitch: 0, // vista dall'alto
-        bearing: map.getBearing(),
-        duration: 1100,
-        linear: true,
-        essential: true,
-      },
+      { padding: { top: 90, bottom: 160, left: 70, right: 70 } },
     )
+    if (!cam) return
+    map.easeTo({
+      center: cam.center,
+      // Col pitch la prospettiva "stringe": tolgo un filo di zoom per non
+      // tagliare i bordi del dominio.
+      zoom: (typeof cam.zoom === 'number' ? cam.zoom : map.getZoom()) - 0.4,
+      pitch: 50, // vista in diagonale
+      bearing: map.getBearing(),
+      duration: 1100,
+      essential: true,
+    })
   }
   const selectEnv = (key: string, on: boolean) => {
     setEnvVisible(on ? { [key]: true } : {})
@@ -1986,11 +2018,6 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // microclima 3D. Default 2 = livello pedonale (~1.5 m). Lo slider commuta il
   // PNG dell'overlay attivo a quella quota (vedi effect dedicato).
   const [envHeightBand, setEnvHeightBand] = useState(2)
-  // Testo grezzo del campo quota mentre lo si DIGITA (null = non in modifica,
-  // mostra la quota effettiva). Lo snap alla banda piu' vicina avviene solo al
-  // blur / Invio, cosi' si puo' scrivere liberamente (prima lo snap a ogni
-  // tasto reimpostava il valore e non si riusciva a modificare).
-  const [heightInput, setHeightInput] = useState<string | null>(null)
   // Quota del suolo (m s.l.m.) sotto il dominio ENVI-met, dal meta. Serve ad
   // alzare il piano dell'overlay a base_terreno + z scelta (z deck = assoluti).
   const [envGroundElev, setEnvGroundElev] = useState(57)
@@ -2019,6 +2046,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null)
+  // Evita che il riempimento automatico del campo dopo aver scelto un risultato
+  // (gotoResult fa setSearch) ri-lanci i suggerimenti as-you-type.
+  const suppressSuggestRef = useRef(false)
   // Vista pulita: nasconde tutti i pannelli/filtri per uno screenshot o una
   // vista 3D senza ingombri. Lo screenshot cattura comunque solo le canvas
   // (mappa + deck), mai il DOM dei pannelli.
@@ -2056,6 +2086,10 @@ export default function MapViewer({ lang }: MapViewerProps) {
       localStorage.setItem('us3d_intro_seen', '1')
     } catch {}
   }
+  // Guida completa del sito, apribile in qualsiasi momento dal tasto "?" (a
+  // differenza del banner di benvenuto, che compare una volta sola). Spiega
+  // cos'e' il sito, i dati e come si usa — pensata per il cittadino.
+  const [showGuide, setShowGuide] = useState(false)
   // Overlay microclima attivo come IMMAGINE da drappeggiare sul terreno 3D
   // ({url, coordinates}) o null. Sostituisce il vecchio foglio piatto deck.gl:
   // drappeggiato, l'overlay segue il rilievo per-pixel, quindi a 1.5/4.5 m il
@@ -2254,67 +2288,10 @@ export default function MapViewer({ lang }: MapViewerProps) {
         if (map && map.isStyleLoaded()) reapplyRef.current?.()
       })
       .catch(() => {})
-    fetch(WIND_META_URL)
-      .then((r) => {
-        if (!r.ok) {
-          console.warn('[wind] meta fetch', r.status, WIND_META_URL)
-          return null
-        }
-        return r.json()
-      })
-      .then((meta) => {
-        if (cancelled || !meta) return
-        if (
-          meta.image &&
-          Array.isArray(meta.coordinates) &&
-          meta.coordinates.length === 4 &&
-          meta.bounds &&
-          typeof meta.minmax_observed === 'string'
-        ) {
-          const [lo, hi] = meta.minmax_observed.split(',').map(Number)
-          console.log(
-            '[wind] meta loaded, bounds',
-            meta.bounds,
-            'range',
-            lo,
-            hi,
-          )
-          setWindOverlay({
-            png: withBase(meta.image),
-            coordinates: meta.coordinates,
-            bounds: meta.bounds,
-            range: { min: lo, max: hi },
-          })
-        }
-      })
-      .catch((err) => console.warn('[wind] meta error', err))
     return () => {
       cancelled = true
     }
   }, [])
-
-  // Costruisce il sampler del vento appena windOverlay (meta + PNG) e' carico.
-  // Una volta sola; sopravvive ai re-render via ref.
-  useEffect(() => {
-    if (!windOverlay) return
-    let cancelled = false
-    buildWindSampler({
-      bounds: windOverlay.bounds,
-      range: windOverlay.range,
-      imageUrl: windOverlay.png,
-    })
-      .then((s) => {
-        if (!cancelled) {
-          windSamplerRef.current = s
-          setSamplersReady((v) => v + 1)
-        }
-      })
-      .catch((err) => console.warn('[wind] sampler build', err))
-    return () => {
-      cancelled = true
-      windSamplerRef.current = null
-    }
-  }, [windOverlay])
 
   // Carica (lazy) i sampler ENVI-met per gli overlay attualmente accesi, e
   // calcola i valori al punto cliccato. Vedi lib/envimet.ts per il
@@ -2355,16 +2332,10 @@ export default function MapViewer({ lang }: MapViewerProps) {
   // Deriva i valori al punto cliccato dai layer attivi + sampler pronti.
   useEffect(() => {
     if (!probe) {
-      setPointWind(null)
       setPointEnv([])
       return
     }
     const { lat, lon } = probe
-    setPointWind(
-      visibility['wind'] && windSamplerRef.current
-        ? windSamplerRef.current(lon, lat)
-        : null,
-    )
     const active = (envimetRef.current ?? []).filter((o) => envVisible[o.key])
     // Se 'Edifici -> temperatura' e' attivo, mostra comunque la temperatura
     // percepita (MRT) al punto cliccato (anche con l'overlay raster spento):
@@ -2387,10 +2358,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
         value:
           o.key === 'mean_radiant_temp' && probeBuildingTempRef.current != null
             ? probeBuildingTempRef.current
-            : (envSamplersRef.current[o.key]?.(lon, lat) ?? null),
+            : // Campiona la QUOTA scelta dallo slider (envHeightBand), così il
+              // valore segue il "foglio" che sale; fallback alla banda pedonale.
+              (envSamplersRef.current[o.key]?.(lon, lat, envHeightBand) ?? null),
       })),
     )
-  }, [probe, visibility, envVisible, envimetOverlays, samplersReady])
+  }, [probe, visibility, envVisible, envimetOverlays, samplersReady, envHeightBand])
 
   // Marker DOM delle stazioni qualita' aria (sempre sopra agli edifici 3D,
   // che con deck.gl occluderebbero i cerchi MapLibre). Click -> popup con le
@@ -2599,40 +2572,10 @@ export default function MapViewer({ lang }: MapViewerProps) {
       const initialVis = (id: LayerKey) =>
         visibility[id] ? 'visible' : 'none'
 
-      if (!map.getSource('landuse')) {
-        map.addSource('landuse', { type: 'geojson', data: LANDUSE_URL })
-      }
-      if (!map.getLayer('land-use')) {
-        map.addLayer({
-          id: 'land-use',
-          source: 'landuse',
-          type: 'fill',
-          paint: {
-            'fill-color': 'rgba(180, 130, 80, 0.25)',
-            'fill-outline-color': 'rgba(220, 170, 110, 0.6)',
-          },
-          layout: { visibility: initialVis('land-use') },
-        })
-      }
-
-      if (!map.getSource('buildings-particellari')) {
-        map.addSource('buildings-particellari', {
-          type: 'geojson',
-          data: BUILDINGS_FOOTPRINT_URL,
-        })
-      }
-      if (!map.getLayer('buildings-particellari')) {
-        map.addLayer({
-          id: 'buildings-particellari',
-          source: 'buildings-particellari',
-          type: 'fill',
-          paint: {
-            'fill-color': 'rgba(120, 160, 200, 0.35)',
-            'fill-outline-color': 'rgba(150, 200, 240, 0.9)',
-          },
-          layout: { visibility: initialVis('buildings-particellari') },
-        })
-      }
+      // (Layer MapLibre 'land-use' / uso del suolo e 'buildings-particellari' /
+      // footprint 2D RIMOSSI su richiesta utente: niente toggle nel pannello e
+      // niente fetch dei rispettivi GeoJSON. BUILDINGS_FOOTPRINT_URL resta usato
+      // come fallback degli edifici 3D, non come layer a se'.)
 
       // NB: edifici 3D OSM (openfreemap) DISATTIVATI. Si sovrapponevano agli
       // edifici Open Data Bologna estrusi da deck.gl (altezze diverse) ->
@@ -3055,48 +2998,6 @@ export default function MapViewer({ lang }: MapViewerProps) {
     }
   }, [currentTime])
 
-  // Aggiunge il source/layer del vento quando arriva la meta (one-shot).
-  // Uso 'idle' (non 'load') perche' load si emette una volta sola: se questo
-  // effect monta dopo che la map ha gia' caricato, once('load') non parte mai.
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map || !windOverlay || windAddedRef.current) return
-    const register = () => {
-      if (windAddedRef.current || map.getSource('wind')) return
-      map.addSource('wind', {
-        type: 'image',
-        url: windOverlay.png,
-        coordinates: windOverlay.coordinates,
-      })
-      // Lo metto sotto agli edifici 3D OSM: il vento e' una mappa di sfondo,
-      // gli edifici 3D restano in primo piano.
-      const beforeId = map.getLayer('osm-buildings-context')
-        ? 'osm-buildings-context'
-        : undefined
-      map.addLayer(
-        {
-          id: 'wind',
-          source: 'wind',
-          type: 'raster',
-          paint: {
-            'raster-opacity': 0.85,
-            // Boost contrast/saturation: il raster ha range 0-3 m/s a Bologna,
-            // tutti i pixel sono nella fascia viola scura della colormap viridis
-            // e su una basemap dark-matter si vedono poco. Saturazione +
-            // brightness rendono le sfumature percepibili.
-            'raster-saturation': 0.5,
-            'raster-contrast': 0.3,
-          },
-          layout: { visibility: visibility['wind'] ? 'visible' : 'none' },
-        },
-        beforeId,
-      )
-      console.log('[wind] layer added, opacity 0.85, beforeId', beforeId)
-      windAddedRef.current = true
-    }
-    if (map.isStyleLoaded()) register()
-    else map.once('idle', register)
-  }, [windOverlay, visibility])
 
   // Overlay microclima ENVI-met DRAPPEGGIATO sul terreno 3D: sorgente `image`
   // MapLibre + layer `raster` (come il vento). MapLibre lo spalma sulla mesh del
@@ -3171,11 +3072,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
       const maplibre3d = visibility['buildings-3d'] ? 'visible' : 'none'
       // (L'overlay env e' la sorgente immagine 'env-overlay', gestita a parte.)
       for (const id of [
-        'land-use',
-        'buildings-particellari',
         'green-areas',
         'private-green',
-        'wind',
         'noise',
       ] as LayerKey[]) {
         if (map.getLayer(id)) {
@@ -3386,15 +3284,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
 
   // Basemap switcher: setStyle distrugge i source/layer custom, quindi dopo
   // 'style.load' ri-eseguo addCustomLayers (registrata in reapplyRef).
-  // Il flag windAddedRef viene resettato cosi' anche l'overlay vento viene
-  // ricreato sul nuovo stile.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
     map.setStyle(BASEMAPS[basemap].style)
     map.once('style.load', () => {
       reapplyRef.current?.()
-      windAddedRef.current = false
       // Sole + luce + cielo vengono persi nello swap, ricomputo
       // sull'ora corrente letta dal ref (potrebbe essere cambiata dopo
       // il mount).
@@ -3567,8 +3462,55 @@ export default function MapViewer({ lang }: MapViewerProps) {
         .addTo(map)
     }
     setSearchResults([])
+    suppressSuggestRef.current = true
     setSearch(res.label.split(',')[0])
   }
+
+  // Suggerimenti AS-YOU-TYPE: mentre si digita (min 3 caratteri) si interroga
+  // Nominatim con debounce (~450 ms, rispetta il limite ~1 req/s) e si mostrano
+  // i risultati nello stesso dropdown — quartieri in cima, poi indirizzi/vie.
+  // Prima i suggerimenti comparivano solo premendo Invio/Cerca.
+  useEffect(() => {
+    if (suppressSuggestRef.current) {
+      suppressSuggestRef.current = false
+      return
+    }
+    const q = search.trim()
+    if (q.length < 3) {
+      setSearchResults([])
+      return
+    }
+    const quartieriHits = matchQuartieri(q)
+    let cancelled = false
+    const handle = setTimeout(async () => {
+      try {
+        const url =
+          'https://nominatim.openstreetmap.org/search?format=jsonv2' +
+          '&limit=6&bounded=1&viewbox=11.25,44.55,11.45,44.45&q=' +
+          encodeURIComponent(`${q}, Bologna, Italia`)
+        const r = await fetch(url, {
+          headers: { 'Accept-Language': lang === 'en' ? 'en' : 'it' },
+        })
+        const data: { display_name: string; lat: string; lon: string }[] =
+          await r.json()
+        if (cancelled) return
+        const addresses: SearchResult[] = data.map((d) => ({
+          type: 'address' as const,
+          label: d.display_name,
+          lat: Number(d.lat),
+          lon: Number(d.lon),
+        }))
+        setSearchResults([...quartieriHits, ...addresses])
+      } catch {
+        if (!cancelled) setSearchResults(quartieriHits)
+      }
+    }, 450)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, quartieri, lang])
 
   // Composita TUTTE le canvas dentro il container (MapLibre sotto + deck.gl
   // sopra) su una canvas 2D e risolve un PNG blob. Cattura solo le canvas,
@@ -4024,8 +3966,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
             if (cat.key === 'microclima') {
               const ovs = envimetOverlays ?? []
               const curatedOvs = ovs.filter((o) => o.curated)
-              const techOvs = ovs.filter((o) => !o.curated)
-              const active = ovs.filter((o) => envVisible[o.key]).length
+              // Dati tecnici nascosti di default (SHOW_TECHNICAL_ENVIMET): il
+              // cittadino vede solo i 7 curati. Per riattivarli vedi la costante.
+              const techOvs = SHOW_TECHNICAL_ENVIMET
+                ? ovs.filter((o) => !o.curated)
+                : []
+              // Totale mostrato all'utente = curati (+ tecnici se riattivati).
+              const shownOvs = [...curatedOvs, ...techOvs]
+              const active = shownOvs.filter((o) => envVisible[o.key]).length
               const techActive = techOvs.filter((o) => envVisible[o.key]).length
               const ovRow = (o: EnvimetOverlay, dim = false) => (
                 <label
@@ -4046,7 +3994,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
               )
               return (
                 <div key={cat.key} className="border-b border-talea-400/10 last:border-0 pb-1 mb-0.5">
-                  {collapseBtn(active, ovs.length)}
+                  {collapseBtn(active, shownOvs.length)}
                   {!isCollapsed && (
                     <div className="flex flex-col gap-1.5 pl-4 pt-1 pb-1">
                       {ovs.length === 0 && (
@@ -4055,6 +4003,28 @@ export default function MapViewer({ lang }: MapViewerProps) {
                         </span>
                       )}
                       {curatedOvs.map((o) => ovRow(o))}
+                      {/* "Temperatura degli edifici": colora gli edifici per
+                          temperatura percepita (MRT) ENVI-met. Vive QUI nel
+                          microclima (non e' un overlay drappeggiato ma un
+                          toggle `visibility`), reso a mano come riga dedicata. */}
+                      <label
+                        className="flex items-center gap-2 text-sm cursor-pointer hover:text-talea-300 text-gray-200"
+                        title="ENVI-met"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={visibility['buildings-temp']}
+                          onChange={(e) => {
+                            setVisibility((v) => ({
+                              ...v,
+                              'buildings-temp': e.target.checked,
+                            }))
+                            if (e.target.checked) flyToEnvDomain()
+                          }}
+                          className="accent-talea-400 cursor-pointer"
+                        />
+                        <span>{t('layer_buildings_temp', lang)}</span>
+                      </label>
                       {techOvs.length > 0 && (
                         <>
                           <button
@@ -4095,18 +4065,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
                   <div className="flex flex-col gap-1.5 pl-4 pt-1 pb-1">
                     {items.map((l) => {
                       const disabled =
-                        (l.id === 'wind' && !windOverlay) ||
                         (l.id === 'air-stations' && !airStations) ||
                         (l.id === 'shadows' && !visibility['buildings-3d'])
                       const label = l.rawLabel ?? (l.labelKey ? t(l.labelKey, lang) : l.id)
                       return (
                         <label
                           key={l.id}
-                          title={
-                            disabled && l.id === 'wind'
-                              ? 'Lancia scripts/build_wind_overlay.sh per generare l’overlay'
-                              : undefined
-                          }
                           className={`flex items-center gap-2 text-sm transition-colors ${
                             disabled
                               ? 'text-gray-500 cursor-not-allowed'
@@ -4156,64 +4120,36 @@ export default function MapViewer({ lang }: MapViewerProps) {
           heights.findIndex((h) => h.band === envHeightBand),
         )
         const cur = heights[idx] ?? heights[0]
-        // Aggancia il testo digitato alla banda con z_m piu' vicina.
-        const commitHeight = () => {
-          if (heightInput == null) return
-          const target = Number(heightInput)
-          if (Number.isFinite(target)) {
-            const nearest = heights.reduce((best, h) =>
-              Math.abs(h.z_m - target) < Math.abs(best.z_m - target) ? h : best,
-            )
-            setEnvHeightBand(nearest.band)
-          }
-          setHeightInput(null)
-        }
         return (
           // A DESTRA (centrata in verticale), come richiesto. Compatta.
           <div className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1.5 bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl">
             <div className="text-talea-400 text-[10px] font-mono uppercase tracking-widest">
               {lang === 'it' ? 'Quota' : 'Height'}
             </div>
-            {/* Input numerico: si DIGITA liberamente; lo snap alla banda piu'
-                vicina avviene al blur / Invio (commitHeight). */}
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min={heights[0].z_m}
-                max={heights[heights.length - 1].z_m}
-                step="0.5"
-                value={heightInput ?? cur.z_m}
-                onChange={(e) => setHeightInput(e.target.value)}
-                onBlur={commitHeight}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    commitHeight()
-                    e.currentTarget.blur()
-                  }
-                }}
-                className="w-14 bg-talea-panel-2 border border-talea-400/30 rounded px-1 py-0.5 text-talea-100 text-sm font-mono font-bold text-center outline-none focus:border-talea-400/70"
-                aria-label={lang === 'it' ? 'Quota in metri' : 'Height in meters'}
-              />
+            {/* Quota corrente in SOLA LETTURA: il valore si cambia SOLO muovendo
+                lo slider (niente input digitabile/freccette, che confondevano —
+                richiesta utente). Mostra la quota della banda agganciata. */}
+            <div className="flex items-baseline gap-1">
+              <span className="text-talea-100 text-base font-mono font-bold tabular-nums">
+                {cur.z_m}
+              </span>
               <span className="text-talea-300 text-[10px] font-mono">m</span>
             </div>
-            {/* Slider PROPORZIONALE ai metri reali: il range va da z_min a z_max
-                in metri (non per indice), cosi' la posizione del cursore riflette
-                l'altezza vera (le quote fitte vicino al suolo restano vicine).
-                Allo spostamento aggancia (snap) la banda con z_m piu' vicina. */}
+            {/* Slider per INDICE di banda (1 tacca = 1 quota), NON proporzionale
+                ai metri: le quote sono molto disuniformi (1.5, 4.5, ... 40.5,
+                58.5 m), quindi un range in metri schiacciava le 6 quote basse
+                nel ~25% inferiore e diventava impossibile selezionarle. A passo
+                costante ogni quota ha lo stesso spazio -> selezione affidabile.
+                L'etichetta sopra mostra comunque i metri reali della banda. */}
             <input
               type="range"
-              min={heights[0].z_m}
-              max={heights[heights.length - 1].z_m}
-              step={0.1}
-              value={cur.z_m}
+              min={0}
+              max={heights.length - 1}
+              step={1}
+              value={idx}
               onChange={(e) => {
-                const target = Number(e.target.value)
-                const nearest = heights.reduce((best, h) =>
-                  Math.abs(h.z_m - target) < Math.abs(best.z_m - target)
-                    ? h
-                    : best,
-                )
-                setEnvHeightBand(nearest.band)
+                const i = Number(e.target.value)
+                setEnvHeightBand((heights[i] ?? heights[0]).band)
               }}
               className="accent-talea-400 h-32 cursor-pointer"
               style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
@@ -4436,13 +4372,154 @@ export default function MapViewer({ lang }: MapViewerProps) {
               ? 'I dati sono una simulazione di una giornata estiva tipo, non il meteo di oggi.'
               : 'Data is a simulation of a typical summer day, not today’s weather.'}
           </p>
-          <button
-            type="button"
-            onClick={dismissIntro}
-            className="px-5 py-1.5 rounded bg-talea-400 text-white text-sm font-bold uppercase tracking-wider hover:bg-talea-300 transition-colors"
+          <div className="flex items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={dismissIntro}
+              className="px-5 py-1.5 rounded bg-talea-400 text-white text-sm font-bold uppercase tracking-wider hover:bg-talea-300 transition-colors"
+            >
+              {lang === 'it' ? 'Inizia' : 'Start'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                dismissIntro()
+                setShowGuide(true)
+              }}
+              className="text-talea-300 hover:text-talea-100 text-xs font-mono uppercase tracking-wider underline-offset-2 hover:underline"
+            >
+              {lang === 'it' ? 'Apri la guida' : 'Open the guide'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* GUIDA completa del sito (tasto "?"). Spiega cos'e', i dati e come si usa,
+          con parole semplici per il cittadino. Scrollabile, chiudibile. */}
+      {showGuide && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-3"
+          onClick={() => setShowGuide(false)}
+        >
+          <div
+            className="w-[min(560px,calc(100vw-1.5rem))] max-h-[85vh] overflow-y-auto bg-talea-panel/97 border border-talea-400/40 rounded-lg p-5 backdrop-blur-md shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
           >
-            {lang === 'it' ? 'Inizia' : 'Start'}
-          </button>
+            <div className="flex items-start justify-between mb-3">
+              <div className="text-talea-300 text-base font-bold uppercase tracking-widest">
+                {lang === 'it' ? 'Guida a Talea' : 'Talea guide'}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowGuide(false)}
+                className="text-gray-400 hover:text-talea-200 text-xl leading-none -mt-1"
+                aria-label={lang === 'it' ? 'Chiudi' : 'Close'}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-gray-200 text-sm leading-relaxed mb-4">
+              {lang === 'it'
+                ? 'Questa mappa 3D mostra il microclima di un quartiere di Bologna in una giornata estiva tipo: dove fa più caldo, dove il verde e il vento rinfrescano, quanto “scotta” davvero stare al sole. I dati vengono da una simulazione scientifica (ENVI-met), non sono il meteo di oggi.'
+                : 'This 3D map shows the microclimate of a Bologna neighbourhood on a typical summer day: where it gets hottest, where greenery and wind cool things down, how much the sun really “burns”. The data comes from a scientific simulation (ENVI-met), it is not today’s weather.'}
+            </p>
+
+            {(() => {
+              const it = lang === 'it'
+              const Section = ({
+                icon,
+                title,
+                children,
+              }: {
+                icon: string
+                title: string
+                children: ReactNode
+              }) => (
+                <div className="mb-3.5">
+                  <div className="text-talea-200 text-sm font-semibold mb-1 flex items-center gap-2">
+                    <span aria-hidden="true">{icon}</span>
+                    {title}
+                  </div>
+                  <div className="text-gray-300 text-[13px] leading-relaxed">
+                    {children}
+                  </div>
+                </div>
+              )
+              return (
+                <>
+                  <Section icon="①" title={it ? 'Scegli un dato' : 'Pick a layer'}>
+                    {it
+                      ? 'Nel pannello a sinistra apri “Microclima” e scegli cosa vedere: temperatura dell’aria, temperatura percepita, umidità, sole, vento, verde. Si vede un dato alla volta, colorato sulla mappa. La legenda in alto a destra spiega i colori.'
+                      : 'In the left panel open “Microclimate” and choose what to see: air temperature, perceived temperature, humidity, sun, wind, greenery. One layer at a time, coloured on the map. The legend on the top right explains the colours.'}
+                  </Section>
+                  <Section icon="②" title={it ? 'Clicca un punto' : 'Click a spot'}>
+                    {it
+                      ? 'Clicca sulla mappa: in alto a destra compaiono i valori esatti di quel punto (per esempio quanti gradi). Clicca su un edificio per leggere la sua temperatura, su un albero per la specie.'
+                      : 'Click on the map: the exact values of that spot appear on the top right (e.g. how many degrees). Click a building to read its temperature, a tree for its species.'}
+                  </Section>
+                  <Section icon="③" title={it ? 'Cambia quota (slider)' : 'Change height (slider)'}>
+                    {it
+                      ? 'Quando un dato ha la barra verticale a destra, trascinala per salire dal livello della strada fin sopra i tetti. Il dato e il valore del punto cambiano con l’altezza: in alto il vento è più forte, il caldo si distribuisce diversamente.'
+                      : 'When a layer has the vertical bar on the right, drag it to rise from street level up above the rooftops. The layer and the point value change with height: wind is stronger up high, heat spreads differently.'}
+                  </Section>
+                  <Section icon="④" title={it ? 'Muoviti in 3D' : 'Move in 3D'}>
+                    {it
+                      ? 'Trascina per ruotare, usa due dita o la rotellina per zoomare e inclinare. La bussola in alto a destra rimette il Nord in su. Cerca una via o un quartiere dalla barra di ricerca in alto.'
+                      : 'Drag to rotate, use two fingers or the wheel to zoom and tilt. The compass on the top right resets North up. Search a street or district from the search bar at the top.'}
+                  </Section>
+
+                  <div className="border-t border-talea-400/15 mt-1 pt-3">
+                    <div className="text-talea-200 text-sm font-semibold mb-2">
+                      {it ? 'Cosa significano i dati' : 'What the data means'}
+                    </div>
+                    <ul className="text-gray-300 text-[13px] leading-relaxed space-y-1.5">
+                      <li>
+                        <b className="text-gray-100">{it ? 'Temperatura dell’aria' : 'Air temperature'}</b>{' '}
+                        — {it ? 'quanto è calda l’aria all’altezza delle persone.' : 'how hot the air is at human height.'}
+                      </li>
+                      <li>
+                        <b className="text-gray-100">{it ? 'Temperatura percepita' : 'Perceived temperature'}</b>{' '}
+                        — {it ? 'il caldo che senti davvero: aria + sole + calore di muri e asfalto. È l’indice più “umano”.' : 'the heat you actually feel: air + sun + heat from walls and pavement. The most “human” index.'}
+                      </li>
+                      <li>
+                        <b className="text-gray-100">{it ? 'Umidità' : 'Humidity'}</b>{' '}
+                        — {it ? 'quanto è afosa l’aria.' : 'how muggy the air is.'}
+                      </li>
+                      <li>
+                        <b className="text-gray-100">{it ? 'Sole e luce' : 'Sun & light'}</b>{' '}
+                        — {it ? 'quanto sole diretto, diffuso o riflesso colpisce le strade.' : 'how much direct, diffuse or reflected sun hits the streets.'}
+                      </li>
+                      <li>
+                        <b className="text-gray-100">{it ? 'Vento' : 'Wind'}</b>{' '}
+                        — {it ? 'quanto soffia: porta via il caldo e rinfresca.' : 'how strong it blows: it carries heat away and cools.'}
+                      </li>
+                      <li>
+                        <b className="text-gray-100">{it ? 'Verde' : 'Greenery'}</b>{' '}
+                        — {it ? 'dove la chioma degli alberi fa ombra e frescura.' : 'where tree canopy gives shade and cooling.'}
+                      </li>
+                    </ul>
+                  </div>
+
+                  <p className="text-gray-500 text-[11px] leading-snug mt-4">
+                    {it
+                      ? 'I dati microclima sono una fotografia simulata di un istante (una giornata estiva tipo), utile a confrontare le zone fra loro, non una previsione del tempo.'
+                      : 'The microclimate data is a simulated snapshot of one moment (a typical summer day), useful to compare areas with each other, not a weather forecast.'}
+                  </p>
+                </>
+              )
+            })()}
+
+            <div className="text-center mt-4">
+              <button
+                type="button"
+                onClick={() => setShowGuide(false)}
+                className="px-6 py-1.5 rounded bg-talea-400 text-white text-sm font-bold uppercase tracking-wider hover:bg-talea-300 transition-colors"
+              >
+                {lang === 'it' ? 'Ho capito' : 'Got it'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -4478,8 +4555,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 <InfoPanel
                   lat={probe.lat}
                   lon={probe.lon}
-                  windSpeed={pointWind}
                   envSamples={pointEnv}
+                  heightM={
+                    activeEnv
+                      .find((o) => (o.heights?.length ?? 0) > 0)
+                      ?.heights?.find((h) => h.band === envHeightBand)?.z_m ?? null
+                  }
                   lang={lang}
                   onClose={() => setProbe(null)}
                 />
@@ -4685,6 +4766,16 @@ export default function MapViewer({ lang }: MapViewerProps) {
             {/* nuvola */}
             <path d="M17.5 19H8.2a3.7 3.7 0 0 1-.4-7.38 5 5 0 0 1 9.46 1.9A3.2 3.2 0 0 1 17.5 19Z" />
           </svg>
+        </button>
+        {/* Guida: riapre la spiegazione del sito in qualsiasi momento. */}
+        <button
+          type="button"
+          onClick={() => setShowGuide(true)}
+          title={lang === 'it' ? 'Guida' : 'Guide'}
+          aria-label={lang === 'it' ? 'Apri la guida' : 'Open the guide'}
+          className="w-10 h-10 rounded-full bg-talea-panel/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors font-bold text-lg leading-none"
+        >
+          ?
         </button>
       </div>
 

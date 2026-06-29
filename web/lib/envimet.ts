@@ -12,10 +12,24 @@
  * risolviamo P = TL + u·(TR−TL) + v·(BL−TL): (u,v) ∈ [0,1]² danno colonna/riga.
  */
 
-export type EnvimetSampler = (lon: number, lat: number) => number | null
+// Il terzo argomento `band` (indice di banda, come nello slider quota) sceglie
+// la griglia della QUOTA corrispondente; se assente o non disponibile si usa la
+// banda pedonale di default (`v`).
+export type EnvimetSampler = (
+  lon: number,
+  lat: number,
+  band?: number | null,
+) => number | null
 
 type Corner = [number, number]
-type ValuesGrid = { w: number; h: number; v: (number | null)[] }
+type ValuesGrid = {
+  w: number
+  h: number
+  v: (number | null)[]
+  // Valori per quota: { "<indice banda>": griglia piatta }. Solo per i curati
+  // 'band'; assente per max-z (vegetazione). Vedi build_envimet_overlays.py.
+  z?: Record<string, (number | null)[]>
+}
 
 export function buildEnvimetSampler(
   corners: [Corner, Corner, Corner, Corner],
@@ -25,9 +39,9 @@ export function buildEnvimetSampler(
   const e1: [number, number] = [TR[0] - TL[0], TR[1] - TL[1]] // asse colonne
   const e2: [number, number] = [BL[0] - TL[0], BL[1] - TL[1]] // asse righe
   const det = e1[0] * e2[1] - e2[0] * e1[1]
-  const { w, h, v } = data
+  const { w, h, v, z } = data
 
-  return (lon, lat) => {
+  return (lon, lat, band) => {
     if (!det) return null
     const dx = lon - TL[0]
     const dy = lat - TL[1]
@@ -36,7 +50,9 @@ export function buildEnvimetSampler(
     if (u < 0 || u > 1 || vv < 0 || vv > 1) return null // fuori dominio
     const col = Math.min(w - 1, Math.max(0, Math.floor(u * w)))
     const row = Math.min(h - 1, Math.max(0, Math.floor(vv * h)))
-    const val = v[row * w + col]
+    // Griglia della quota scelta se presente, altrimenti la banda pedonale.
+    const grid = (band != null && z && z[String(band)]) || v
+    const val = grid[row * w + col]
     return val === null || val === undefined ? null : val
   }
 }

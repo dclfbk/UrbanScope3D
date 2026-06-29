@@ -174,3 +174,43 @@ con il modulo **BIO-met** di ENVI-met (richiesta lato Leonardo). Una volta otten
 il `.tif`, si aggiunge come variabile **curata** (§2) e, volendo, si fa colorare
 gli edifici con esso al posto della MRT in `MapViewer.tsx` (funzione
 `pedestrianMrt` / `mrt_col`).
+
+---
+
+## 7. Mostrare di nuovo i "Dati tecnici" nel viewer
+
+Di default il viewer mostra **solo gli 8 dati curati** (temperatura aria, percepita,
+umidità, sole diretto/diffuso/riflesso, vegetazione, **velocità del vento**): il
+sito è per i cittadini, non per i tecnici. Le ~30 variabili ENVI-met grezze
+(`flow_u`, `tke`, `pressure_perturbation`, …) **vengono comunque generate** dallo
+script (overlay PNG + voce in `overlays.json`), ma **non sono elencate** nel
+pannello Microclima.
+
+Per **riattivarle**, in `web/components/Map/MapViewer.tsx` metti:
+
+```ts
+const SHOW_TECHNICAL_ENVIMET = true   // era false
+```
+
+Ricompaiono in fondo al gruppo **Microclima**, in un menu a scomparsa
+"Dati tecnici". Nessun'altra modifica serve: la lista è dinamica da
+`overlays.json` (tutto ciò che ha `curated: false`).
+
+> La **velocità del vento** è stata **promossa a dato curato** (slider quota +
+> valore al click): vedi la riga `wind_speed` in `CURATED`. C'è anche un layer
+> "Vento" separato (frecce/flusso) nella categoria *Ambiente*, alimentato da
+> `wind_overlay.json` (pipeline diversa), che resta un dato a livello singolo.
+
+---
+
+## 8. Valore al click per ogni QUOTA (slider altezza)
+
+Per i curati con `agg="band"` lo script ora scrive in `<key>.values.json` non solo
+la banda pedonale (`v`) ma anche un blocco `z` con la **griglia di valori per ogni
+quota** dello slider (`HEIGHT_BANDS`). Così, alzando lo slider, il popup del punto
+cliccato mostra il valore **di quella quota**, non più sempre quello a ~1,5 m.
+
+Formato: `{ "w", "h", "v": [...], "z": { "<banda>": [...], ... } }`. Il viewer
+(`lib/envimet.ts`, `buildEnvimetSampler`) sceglie la griglia in base allo slider e
+ricade su `v` se la quota non è disponibile. Costo: i `.values.json` curati passano
+da ~0,4 MB a ~3,5 MB l'uno (caricati **lazy**, uno alla volta solo quando serve).

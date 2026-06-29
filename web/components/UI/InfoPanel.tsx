@@ -7,8 +7,10 @@ type EnvSample = { key: string; label: string; unit: string; value: number | nul
 type Props = {
   lat: number
   lon: number
-  windSpeed: number | null
   envSamples: EnvSample[]
+  // Quota (m sul suolo) a cui si riferiscono i valori microclima, se il dato
+  // attivo ha lo slider altezza. null = livello pedonale / dato senza quote.
+  heightM?: number | null
   lang: Lang
   onClose: () => void
 }
@@ -21,8 +23,8 @@ type Props = {
 export default function InfoPanel({
   lat,
   lon,
-  windSpeed,
   envSamples,
+  heightM,
   lang,
   onClose,
 }: Props) {
@@ -44,26 +46,18 @@ export default function InfoPanel({
         {lat.toFixed(5)}, {lon.toFixed(5)}
       </div>
 
-      {windSpeed != null && (
-        <>
-          <div className="text-talea-400 text-xs font-mono uppercase tracking-widest mt-3 mb-1">
-            {t('windSpeed', lang)}
-          </div>
-          <div className="text-gray-200 text-sm font-mono">
-            <span className="text-talea-green">
-              {windSpeed.toFixed(2)} m/s
-            </span>
-          </div>
-          <div className="text-gray-500 text-[10px] mt-1 italic">
-            {t('windSource', lang)}
-          </div>
-        </>
-      )}
-
       {envSamples.length > 0 && (
         <>
-          <div className="text-talea-400 text-xs font-mono uppercase tracking-widest mt-3 mb-1">
-            {t('microclimaValues', lang)}
+          <div className="text-talea-400 text-xs font-mono uppercase tracking-widest mt-3 mb-1 flex items-baseline justify-between gap-2">
+            <span>{t('microclimaValues', lang)}</span>
+            {heightM != null && (
+              <span
+                className="text-talea-300/80 text-[10px] normal-case tracking-normal"
+                title={lang === 'it' ? 'Quota dello slider altezza' : 'Height slider level'}
+              >
+                @ {heightM} m
+              </span>
+            )}
           </div>
           <div className="text-gray-200 text-sm font-mono flex flex-col gap-0.5">
             {envSamples.map((s) => (

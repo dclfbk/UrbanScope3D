@@ -127,6 +127,11 @@ CURATED = [
     ("diffuse_sw", "19_diffuse_sw_radiation_all_z.tif", "Luce diffusa dal cielo", "W/m²", "magma", "band"),
     ("reflected_sw", "20_reflected_sw_radiation_all_z.tif", "Sole riflesso da muri e suolo", "W/m²", "magma", "band"),
     ("mean_radiant_temp", "26_mean_radiant_temp_all_z.tif", "Temperatura percepita", "°C", "ylorrd", "band"),
+    # Velocita' del vento: curata cosi' ha lo slider quota + valore al click come
+    # le altre (prima era solo un overlay tecnico a terra, "senza livelli"). La
+    # velocita' cresce con la quota (in alto piu' vento, in strada meno): lo
+    # slider lo rende leggibile.
+    ("wind_speed", "04_wind_speed_all_z.tif", "Velocità del vento", "m/s", "blues", "band"),
 ]
 CURATED_KEYS = {k for k, *_ in CURATED}
 CURATED_FILES = {f for _, f, *_ in CURATED}
@@ -150,6 +155,7 @@ FIXED_RANGES = {
     "diffuse_sw": (0.0, 200.0),
     "reflected_sw": (0.0, 400.0),
     "mean_radiant_temp": (20.0, 80.0),
+    "wind_speed": (0.0, 6.0),
 }
 
 # Etichette italiane "umane" per le variabili EXTRA (oltre i 7 curati). Dove
@@ -368,6 +374,11 @@ def main():
             # extra restano un overlay a terra: selezionabili e colorate, ma
             # senza moltiplicare i file). Stesso range fisso -> colori confrontabili.
             heights = []
+            # Valori per QUOTA (banda -> griglia piatta), per il campionamento al
+            # click: cosi' alzando lo slider il popup mostra il valore di QUELLA
+            # quota, non sempre quello pedonale (era il limite noto). Solo per i
+            # curati 'band'. Chiave = indice di banda (string), come in `heights`.
+            z_values: dict[str, list] = {}
             if agg == "band" and key in CURATED_KEYS:
                 for idx in HEIGHT_BANDS:
                     if idx >= ds.count:
@@ -381,6 +392,12 @@ def main():
                         "z_m": round(z_m_of(idx), 1),
                         "image": f"/data/processed/envimet/{key}__z{idx}.png",
                     })
+                    bzr = bz.ravel()
+                    mzr = mz.ravel()
+                    z_values[str(idx)] = [
+                        None if mzr[i] else round(float(bzr[i]), 1)
+                        for i in range(bzr.size)
+                    ]
 
             # Colonna per il gradiente verticale sulle facciate. Uso la
             # TEMPERATURA PERCEPITA (MRT, mean radiant temp): l'aria varia ~1 °C
@@ -401,8 +418,13 @@ def main():
             bm = b.ravel()
             mm = mask.ravel()
             flat = [None if mm[i] else round(float(bm[i]), 1) for i in range(bm.size)]
+            payload = {"w": W, "h": H, "v": flat}
+            # `z`: valori per quota (vuoto per max-z). Il viewer sceglie la griglia
+            # in base allo slider quota; fallback a `v` (banda pedonale).
+            if z_values:
+                payload["z"] = z_values
             (OUT_DIR / f"{key}.values.json").write_text(
-                json.dumps({"w": W, "h": H, "v": flat}, separators=(",", ":")),
+                json.dumps(payload, separators=(",", ":")),
                 encoding="utf-8",
             )
             values_url = f"/data/processed/envimet/{key}.values.json"

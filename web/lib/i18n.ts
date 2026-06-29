@@ -17,29 +17,25 @@ export const STRINGS = {
   cat_edifici: { it: 'Edifici', en: 'Buildings' },
   cat_verde: { it: 'Verde', en: 'Green' },
   cat_ambiente: { it: 'Ambiente', en: 'Environment' },
-  cat_microclima: { it: 'Microclima (ENVI-met)', en: 'Microclimate (ENVI-met)' },
-  cat_territorio: { it: 'Territorio', en: 'Land' },
+  cat_microclima: { it: 'Microclima', en: 'Microclimate' },
 
   // Layer labels
   layer_buildings_3d: { it: 'Edifici 3D', en: 'Buildings 3D' },
   layer_shadows: { it: 'Ombre', en: 'Shadows' },
-  layer_buildings_2d: { it: 'Edifici (footprint 2D)', en: 'Buildings (2D footprint)' },
-  layer_buildings_temp: { it: 'Edifici → temperatura (ENVI-met)', en: 'Buildings → temperature (ENVI-met)' },
+  layer_buildings_temp: { it: 'Temperatura degli edifici', en: 'Building temperature' },
   layer_trees: { it: 'Alberi', en: 'Trees' },
   layer_arredo: { it: 'Arredo urbano', en: 'Street furniture' },
   layer_green: { it: 'Aree verdi', en: 'Green areas' },
   layer_parks: { it: 'Parchi pubblici', en: 'Public parks' },
   layer_private_green: { it: 'Verde privato', en: 'Private green' },
   layer_air: { it: 'Qualita’ aria', en: 'Air quality' },
-  layer_wind: { it: 'Velocita’ vento (m/s)', en: 'Wind speed (m/s)' },
   layer_noise: { it: 'Rumore acustico (stima)', en: 'Acoustic noise (est.)' },
-  layer_landuse: { it: 'Uso del suolo 2020', en: 'Land use 2020' },
 
   // Search / Loading
   loading: { it: 'Caricamento Bologna 3D…', en: 'Loading Bologna 3D…' },
   searchPlaceholder: {
-    it: 'Cerca un indirizzo o un luogo a Bologna…',
-    en: 'Search address or place in Bologna…',
+    it: 'Cerca una via, un quartiere o un luogo…',
+    en: 'Search a street, district or place…',
   },
   go: { it: 'Vai', en: 'Go' },
   clearSearch: { it: 'Pulisci ricerca', en: 'Clear search' },
@@ -67,11 +63,6 @@ export const STRINGS = {
     en: 'climatology, mean over {n} years',
   },
   microclimaValues: { it: 'Microclima (punto)', en: 'Microclimate (point)' },
-  windSpeed: { it: 'Velocita’ vento', en: 'Wind speed' },
-  windSource: {
-    it: 'sorgente: Envimet 04_wind_speed (z=0.3 m)',
-    en: 'source: Envimet 04_wind_speed (z=0.3 m)',
-  },
   tempSource: {
     it: 'sorgente: Open Data Bologna (citta’-wide)',
     en: 'source: Open Data Bologna (city-wide)',
