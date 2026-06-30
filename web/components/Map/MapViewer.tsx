@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapboxOverlay } from '@deck.gl/mapbox'
@@ -15,7 +15,6 @@ import {
   GeoJsonLayer,
   ScatterplotLayer,
   TextLayer,
-  BitmapLayer,
 } from '@deck.gl/layers'
 import { SimpleMeshLayer } from '@deck.gl/mesh-layers'
 import { Geometry } from '@luma.gl/engine'
@@ -27,6 +26,7 @@ import TimeSlider from '@/components/UI/TimeSlider'
 import InfoPanel from '@/components/UI/InfoPanel'
 import MeteoWidget from '@/components/UI/MeteoWidget'
 import { withBase } from '@/lib/basePath'
+import { Soundscape, type SoundMix } from '@/lib/soundscape'
 import {
   BOLOGNA_FOREST_DARK,
   BOLOGNA_OCRA,
@@ -711,6 +711,76 @@ const TRUNK_MESH = meshOf((P, N, I) => {
   addCyl(P, N, I, 0, 0, 0, 1, 1, 0.78, 7)
 })
 
+// --- Foglio microclima che SEGUE IL TERRENO ------------------------------------
+// Il dato ENVI-met è preso a una quota FISSA SUL SUOLO (1.5/4.5/… m). Il terreno
+// del dominio è in pendenza (~13 m N-S) e mosso, quindi un foglio piatto a una
+// quota assoluta unica, a 1.5 m, in certe zone galleggia in aria e in altre
+// finisce sottoterra (-> "buchi" col depth test attivo). Soluzione: tassellare
+// il dominio in una griglia e mettere OGNI vertice a `quota_terreno(vertice) +
+// z_banda`. Così il foglio è sempre ~z_banda sopra il suolo reale (niente buchi)
+// e gli edifici lo occludono correttamente. La mesh è in METRI (offset E/N/su da
+// un'ancora lng/lat) + TEXCOORD per applicarci il PNG dell'overlay.
+const ENV_SHEET_GRID = 28 // celle per lato (29x29 vertici): segue bene il rilievo
+// Orientamento verticale della texture sul foglio-mesh. false = corretto
+// (verificato a video: con true l'overlay usciva capovolto). SimpleMeshLayer
+// campiona la texture con origine in alto-sx, quindi t = v (non 1-v).
+const ENV_TEX_FLIP_V = false
+// Dato a singola istanza per la SimpleMeshLayer del foglio (riferimento stabile,
+// così deck non ricalcola gli attributi a ogni render).
+const ENV_SHEET_DATA = [0]
+function buildEnvSheetMesh(
+  corners: [number, number][], // [TL, TR, BR, BL] in lng/lat
+  zMeters: number,
+  elevAt: (lng: number, lat: number) => number,
+  anchorLng: number,
+  anchorLat: number,
+): Geometry {
+  const [TL, TR, BR, BL] = corners
+  const lerp = (a: [number, number], b: [number, number], t: number): [number, number] => [
+    a[0] + (b[0] - a[0]) * t,
+    a[1] + (b[1] - a[1]) * t,
+  ]
+  const mPerLat = 110540
+  const mPerLng = 111320 * Math.cos((anchorLat * Math.PI) / 180)
+  const N = ENV_SHEET_GRID
+  const positions: number[] = []
+  const texCoords: number[] = []
+  const normals: number[] = []
+  for (let j = 0; j <= N; j++) {
+    const v = j / N // 0 = bordo TL->TR (alto immagine), 1 = bordo BL->BR
+    for (let i = 0; i <= N; i++) {
+      const u = i / N // 0 = lato TL/BL (sx immagine), 1 = lato TR/BR (dx)
+      const top = lerp(TL, TR, u)
+      const bot = lerp(BL, BR, u)
+      const p = lerp(top, bot, v) // [lng, lat] del vertice
+      const elev = elevAt(p[0], p[1]) + zMeters
+      positions.push((p[0] - anchorLng) * mPerLng, (p[1] - anchorLat) * mPerLat, elev)
+      texCoords.push(u, ENV_TEX_FLIP_V ? 1 - v : v)
+      normals.push(0, 0, 1)
+    }
+  }
+  const indices: number[] = []
+  const row = N + 1
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const a = j * row + i
+      const b = a + 1
+      const c = a + row
+      const d = c + 1
+      indices.push(a, c, b, b, c, d)
+    }
+  }
+  return new Geometry({
+    topology: 'triangle-list',
+    attributes: {
+      POSITION: { value: new Float32Array(positions), size: 3 },
+      NORMAL: { value: new Float32Array(normals), size: 3 },
+      TEXCOORD_0: { value: new Float32Array(texCoords), size: 2 },
+    },
+    indices: { value: new Uint32Array(indices), size: 1 },
+  })
+}
+
 // Proprietà grezze dell'albero dal GeoJSON sorgente (tag OSM: genus, species,
 // genus:it, leaf_type, leaf_cycle, height, ...). Usate dal popup info e per
 // scegliere forma/altezza della chioma. Possono mancare: il popup degrada.
@@ -915,6 +985,80 @@ type SearchResult =
       lat: number
       lon: number
     }
+
+// Geocoder Photon (komoot, su dati OSM): è pensato per l'autocomplete "as you
+// type" ed è molto piu' bravo di Nominatim sulle VIE (match parziali, niente
+// limite ~1 req/s). Bias su Bologna (lat/lon + bbox) e STRADE in cima.
+// Doc: https://photon.komoot.io  — niente API key.
+const PHOTON_URL = 'https://photon.komoot.io/api/'
+// Riquadro Bologna + colli (un filo piu' largo del maxBounds della mappa).
+const BOLOGNA_BOX = { west: 11.20, south: 44.40, east: 11.50, north: 44.60 }
+type PhotonProps = {
+  name?: string
+  street?: string
+  housenumber?: string
+  city?: string
+  district?: string
+  locality?: string
+  county?: string
+  postcode?: string
+  osm_key?: string
+  osm_value?: string
+}
+async function geocodeBologna(
+  q: string,
+  lang: Lang,
+  signal?: AbortSignal,
+): Promise<SearchResult[]> {
+  const url =
+    PHOTON_URL +
+    '?q=' + encodeURIComponent(q) +
+    '&limit=8' +
+    `&lang=${lang === 'en' ? 'en' : 'it'}` +
+    '&lat=44.4949&lon=11.3426' + // bias sul centro di Bologna
+    `&bbox=${BOLOGNA_BOX.west},${BOLOGNA_BOX.south},${BOLOGNA_BOX.east},${BOLOGNA_BOX.north}`
+  const r = await fetch(url, { signal })
+  const data = (await r.json()) as {
+    features?: {
+      geometry: { coordinates: [number, number] }
+      properties: PhotonProps
+    }[]
+  }
+  const inBox = (lon: number, lat: number) =>
+    lon >= BOLOGNA_BOX.west && lon <= BOLOGNA_BOX.east &&
+    lat >= BOLOGNA_BOX.south && lat <= BOLOGNA_BOX.north
+  const feats = (data.features ?? []).filter((f) =>
+    inBox(f.geometry.coordinates[0], f.geometry.coordinates[1]),
+  )
+  // Strade (osm_key=highway) prima del resto: la ricerca è soprattutto per vie.
+  feats.sort((a, b) => {
+    const ah = a.properties.osm_key === 'highway' ? 0 : 1
+    const bh = b.properties.osm_key === 'highway' ? 0 : 1
+    return ah - bh
+  })
+  const seen = new Set<string>()
+  const out: SearchResult[] = []
+  for (const f of feats) {
+    const p = f.properties
+    const main = p.name || [p.street, p.housenumber].filter(Boolean).join(' ')
+    if (!main) continue
+    const ctx = [p.district || p.locality, p.city]
+      .filter((v): v is string => !!v)
+      .filter((v, i, arr) => arr.indexOf(v) === i)
+      .join(', ')
+    const label = ctx ? `${main}, ${ctx}` : main
+    const key = label.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      type: 'address',
+      label,
+      lon: f.geometry.coordinates[0],
+      lat: f.geometry.coordinates[1],
+    })
+  }
+  return out
+}
 
 const QUARTIERE_BLOCK_HEIGHT = 80 // m, altezza del blocco pseudo-3D
 const QUARTIERE_BLOCK_COLOR = withAlpha(BOLOGNA_RED, 130)
@@ -1807,11 +1951,80 @@ function raiseMapLabels(map: maplibregl.Map): void {
   }
 }
 
-type MapViewerProps = {
-  lang: Lang
+// Testi della modalità AIUTO (annotazioni): per ogni `data-help="<key>"` messo su
+// un comando dell'interfaccia, la card mostra label + cosa fa. `side` = lato
+// preferito dove disegnare la card rispetto al comando contornato.
+const HELP_INFO: Record<
+  string,
+  { label: [string, string]; text: [string, string]; side: 'below' | 'above' | 'left' | 'right' }
+> = {
+  search: {
+    label: ['Ricerca', 'Search'],
+    text: ['Cerca una via o un quartiere di Bologna; suggerimenti mentre scrivi.', 'Search a Bologna street or district; suggestions as you type.'],
+    side: 'below',
+  },
+  basemap: {
+    label: ['Mappa di base', 'Base map'],
+    text: ['Cambia lo sfondo: mappa, scuro, satellite, ortofoto.', 'Switch the background: map, dark, satellite, orthophoto.'],
+    side: 'left',
+  },
+  layers: {
+    label: ['Cosa vedere', 'What to see'],
+    text: ['Apri il pannello e accendi i dati: microclima, edifici, verde, ambiente.', 'Open the panel and turn on data: microclimate, buildings, greenery, environment.'],
+    side: 'right',
+  },
+  arredi: {
+    label: ['Arredi urbani', 'Street furniture'],
+    text: ['Aggiungi alla scena panchine, alberi, fontane e altro.', 'Add benches, trees, fountains and more to the scene.'],
+    side: 'below',
+  },
+  compass: {
+    label: ['Bussola', 'Compass'],
+    text: ['Mostra l’orientamento; cliccala per rimettere il Nord in su.', 'Shows orientation; click it to reset North up.'],
+    side: 'left',
+  },
+  height: {
+    label: ['Slider quota', 'Height slider'],
+    text: ['Vedi il dato microclima dal livello strada (1,5 m) fin sopra i tetti.', 'See the microclimate data from street level (1.5 m) up above the rooftops.'],
+    side: 'left',
+  },
+  legend: {
+    label: ['Legenda', 'Legend'],
+    text: ['La scala dei colori del dato attivo, con minimo e massimo.', 'The colour scale of the active layer, with min and max.'],
+    side: 'above',
+  },
+  sun: {
+    label: ['Sole e orario', 'Sun & time'],
+    text: ['Sposta il sole nell’arco della giornata e guarda come cambiano le ombre.', 'Move the sun through the day and watch the shadows change.'],
+    side: 'above',
+  },
+  controls: {
+    label: ['Vista, foto, condividi, meteo', 'View, photo, share, weather'],
+    text: ['Nascondi i pannelli, scarica uno screenshot 3D, condividi o apri il meteo.', 'Hide panels, download a 3D screenshot, share or open the weather.'],
+    side: 'above',
+  },
+  sound: {
+    label: ['Suoni della zona', 'Area soundscape'],
+    text: ['Ascolta la zona microclima: il verde cinguetta e resta calmo, le strade trafficate ronzano. Clicca un punto per ascoltarlo.', 'Listen to the microclimate area: greenery chirps and stays calm, busy streets hum. Click a spot to hear it.'],
+    side: 'above',
+  },
 }
 
-export default function MapViewer({ lang }: MapViewerProps) {
+type MapViewerProps = {
+  lang: Lang
+  // Modalità AIUTO (annotazioni) CONTROLLATA dal genitore: il bottone "Guida"
+  // vive nell'header (a sinistra del toggle lingua), fuori da MapViewer. Quando
+  // è attiva, ogni comando viene contornato di giallo con una card che spiega
+  // cosa fa (stile help di talea.comune.bologna.it/historysuhi).
+  helpOpen: boolean
+  onHelpOpenChange: (open: boolean) => void
+}
+
+export default function MapViewer({
+  lang,
+  helpOpen,
+  onHelpOpenChange,
+}: MapViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const overlayRef = useRef<MapboxOverlay | null>(null)
@@ -2001,9 +2214,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
     if (!cam) return
     map.easeTo({
       center: cam.center,
-      // Col pitch la prospettiva "stringe": tolgo un filo di zoom per non
-      // tagliare i bordi del dominio.
-      zoom: (typeof cam.zoom === 'number' ? cam.zoom : map.getZoom()) - 0.4,
+      // Col pitch la prospettiva "stringe"; un tempo toglievo zoom, ma l'utente
+      // vuole avvicinarsi un po' di piu' al dominio microclima -> aggiungo zoom.
+      zoom: (typeof cam.zoom === 'number' ? cam.zoom : map.getZoom()) + 0.6,
       pitch: 50, // vista in diagonale
       bearing: map.getBearing(),
       duration: 1100,
@@ -2020,7 +2233,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
   const [envHeightBand, setEnvHeightBand] = useState(2)
   // Quota del suolo (m s.l.m.) sotto il dominio ENVI-met, dal meta. Serve ad
   // alzare il piano dell'overlay a base_terreno + z scelta (z deck = assoluti).
-  const [envGroundElev, setEnvGroundElev] = useState(57)
+  const [envGroundElev, setEnvGroundElev] = useState(ENV_GROUND_ELEV)
+  // Piano del suolo (elev = a + b*lon + c*lat) dal meta: il dominio ha una
+  // pendenza reale N-S (~13 m). Lo uso per INCLINARE il foglio microclima cosi'
+  // segue il suolo (a 1.5 m sta ~1.5 m sul suolo LOCALE, non galleggia sulla
+  // mediana). null -> foglio orizzontale a envGroundElev (retrocompatibile).
+  const [envGroundPlane, setEnvGroundPlane] = useState<
+    { a: number; b: number; c: number } | null
+  >(null)
   // Campo `source` del meta ENVI-met (es. "...TALEA 2024-07-27 11:00 ..."):
   // i dati microclima sono una FOTOGRAFIA di quell'istante, lo dichiariamo in
   // legenda. null finche' il meta non e' caricato.
@@ -2057,6 +2277,13 @@ export default function MapViewer({ lang }: MapViewerProps) {
   const [meteoOpen, setMeteoOpen] = useState(false)
   // Toast "link copiato" dopo il fallback di condivisione su desktop.
   const [shareToast, setShareToast] = useState(false)
+  // Paesaggio sonoro (Web Audio sintetizzato, vedi lib/soundscape.ts): ON/OFF +
+  // motore audio (ref). Suona SOLO nella zona microclima; il mix dei suoni
+  // (uccelli/traffico/vento) è deciso dai dati sotto il punto (computeSoundMix).
+  const [soundOn, setSoundOn] = useState(false)
+  const soundRef = useRef<Soundscape | null>(null)
+  // Etichetta di cosa stai ascoltando (verde/strada/…); null = fuori zona.
+  const [soundLabel, setSoundLabel] = useState<string | null>(null)
   const [quartieri, setQuartieri] = useState<QuartiereFeature[] | null>(null)
   const [selectedQuartiere, setSelectedQuartiere] = useState<number | null>(
     null,
@@ -2086,29 +2313,117 @@ export default function MapViewer({ lang }: MapViewerProps) {
       localStorage.setItem('us3d_intro_seen', '1')
     } catch {}
   }
-  // Guida completa del sito, apribile in qualsiasi momento dal tasto "?" (a
-  // differenza del banner di benvenuto, che compare una volta sola). Spiega
-  // cos'e' il sito, i dati e come si usa — pensata per il cittadino.
+  // Guida testuale completa (modale): stato INTERNO, aperta dal banner della
+  // modalità Aiuto ("Guida completa") o dal banner di benvenuto. Il bottone
+  // "Guida" dell'header apre invece la modalità AIUTO annotata (helpOpen).
   const [showGuide, setShowGuide] = useState(false)
-  // Overlay microclima attivo come IMMAGINE da drappeggiare sul terreno 3D
-  // ({url, coordinates}) o null. Sostituisce il vecchio foglio piatto deck.gl:
-  // drappeggiato, l'overlay segue il rilievo per-pixel, quindi a 1.5/4.5 m il
-  // terreno mosso (dislivello ~26 m nel dominio) non "buca" piu' il dato. Lo
-  // slider quota cambia solo l'immagine mostrata.
+  // Modalità AIUTO: rettangoli (in coordinate viewport) dei comandi marcati con
+  // `data-help`, misurati all'apertura. Per ognuno disegno un contorno giallo
+  // tratteggiato + una card che spiega cosa fa (vedi HELP_INFO e l'overlay).
+  const [helpRects, setHelpRects] = useState<{ key: string; rect: DOMRect }[]>([])
+  useEffect(() => {
+    if (!helpOpen) {
+      setHelpRects([])
+      return
+    }
+    const measure = () => {
+      const els = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-help]'),
+      )
+      const out: { key: string; rect: DOMRect }[] = []
+      for (const el of els) {
+        const k = el.getAttribute('data-help')
+        if (!k) continue
+        const r = el.getBoundingClientRect()
+        if (r.width > 0 && r.height > 0) out.push({ key: k, rect: r })
+      }
+      setHelpRects(out)
+    }
+    measure()
+    // Ri-misura dopo che i pannelli si sono disposti e a ogni resize.
+    const t = setTimeout(measure, 80)
+    window.addEventListener('resize', measure)
+    return () => {
+      clearTimeout(t)
+      window.removeEventListener('resize', measure)
+    }
+  }, [helpOpen, lang])
+  // Overlay microclima attivo come foglio 3D (SimpleMeshLayer texturizzata) o null.
+  // Il foglio è INCLINATO sul piano del suolo (envGroundPlane): ogni angolo ha
+  // la sua quota = suolo locale + z banda, così a 1.5/4.5 m segue la pendenza
+  // N-S del dominio (~13 m) invece di galleggiare sulla mediana. Lo slider quota
+  // cambia l'immagine e fa salire/scendere il foglio.
   const envOverlayImg = useMemo<
-    { url: string; coordinates: EnvimetOverlay['coordinates']; zM: number } | null
+    {
+      url: string
+      coordinates: EnvimetOverlay['coordinates']
+      zM: number
+      // Quota del suolo a un punto qualsiasi: usata come FALLBACK dal foglio-mesh
+      // (envSheet) quando il terreno 3D non è ancora caricato. Piano del suolo se
+      // disponibile (segue la pendenza), altrimenti il suolo mediano.
+      groundAt: (lon: number, lat: number) => number
+    } | null
   >(() => {
     const ov = (envimetOverlays ?? []).find((o) => envVisible[o.key])
     if (!ov) return null
     const hs = ov.heights ?? []
     const sel = hs.find((h) => h.band === envHeightBand) ?? hs[0]
+    // Quota (m sul suolo) della banda scelta: il foglio sale a questa altezza.
+    const zM = sel?.z_m ?? 1.5
+    const gp = envGroundPlane
+    const groundAt = (lon: number, lat: number) =>
+      gp ? gp.a + gp.b * lon + gp.c * lat : envGroundElev
     return {
       url: withBase(sel ? sel.image : ov.image),
       coordinates: ov.coordinates,
-      // Quota (m sul suolo) della banda scelta: il foglio sale a questa altezza.
-      zM: sel?.z_m ?? 1.5,
+      zM,
+      groundAt,
     }
-  }, [envimetOverlays, envVisible, envHeightBand])
+  }, [envimetOverlays, envVisible, envHeightBand, envGroundPlane, envGroundElev])
+
+  // Mesh del foglio microclima che SEGUE IL TERRENO (vedi buildEnvSheetMesh):
+  // ogni vertice a `quota_terreno_reale + z_banda`, campionando la quota dal
+  // terreno 3D di MapLibre (queryTerrainElevation), con fallback al piano del
+  // suolo se il terreno non è ancora caricato. Ricostruita quando cambia
+  // overlay/quota o quando il terreno diventa pronto (overlayReady). `elevAt` è
+  // riusato per posare il pallino del punto cliccato sul foglio.
+  const envSheet = useMemo(() => {
+    if (!envOverlayImg) return null
+    const map = mapRef.current
+    const c = envOverlayImg.coordinates
+    const anchorLng = (c[0][0] + c[1][0] + c[2][0] + c[3][0]) / 4
+    const anchorLat = (c[0][1] + c[1][1] + c[2][1] + c[3][1]) / 4
+    const qe =
+      map &&
+      typeof (map as unknown as { queryTerrainElevation?: unknown })
+        .queryTerrainElevation === 'function'
+        ? (
+            map as unknown as {
+              queryTerrainElevation: (ll: [number, number]) => number | null
+            }
+          ).queryTerrainElevation
+        : null
+    const elevAt = (lng: number, lat: number) => {
+      const e = qe ? qe.call(map, [lng, lat]) : null
+      return typeof e === 'number' && Number.isFinite(e)
+        ? e
+        : envOverlayImg.groundAt(lng, lat)
+    }
+    const mesh = buildEnvSheetMesh(
+      [c[0], c[1], c[2], c[3]] as [number, number][],
+      envOverlayImg.zM,
+      elevAt,
+      anchorLng,
+      anchorLat,
+    )
+    return {
+      mesh,
+      anchor: [anchorLng, anchorLat, 0] as [number, number, number],
+      elevAt,
+    }
+    // overlayReady: ricostruisce quando il terreno è caricato (quote reali).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [envOverlayImg, overlayReady])
 
   // Ref aggiornato a `currentTime`: serve dentro callback registrate al
   // mount (basemap switch, addCustomLayers) per leggere SEMPRE l'ora
@@ -2283,6 +2598,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
         envimetRef.current = meta.overlays as EnvimetOverlay[]
         setEnvimetOverlays(meta.overlays as EnvimetOverlay[])
         if (typeof meta.ground_elev === 'number') setEnvGroundElev(meta.ground_elev)
+        if (
+          meta.ground_plane &&
+          typeof meta.ground_plane.a === 'number' &&
+          typeof meta.ground_plane.b === 'number' &&
+          typeof meta.ground_plane.c === 'number'
+        ) {
+          setEnvGroundPlane(meta.ground_plane)
+        }
         if (typeof meta.source === 'string') setEnvSource(meta.source)
         const map = mapRef.current
         if (map && map.isStyleLoaded()) reapplyRef.current?.()
@@ -2536,6 +2859,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
 
     const map = new maplibregl.Map({
       container: containerRef.current,
+      // Attribution default DISATTIVATA: ne aggiungo una COMPATTA sotto (solo il
+      // bottone ⓘ, toggle chiuso di default). Richiesta: attribution sempre chiusa.
+      attributionControl: false,
       style: BASEMAPS[basemap].style,
       center: AOI_CENTER,
       zoom: 14,
@@ -2564,6 +2890,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
         [11.45, 44.55],
       ],
     })
+
+    // Attribution COMPATTA (compact: true): in basso a destra mostra solo il
+    // bottone ⓘ, chiuso di default; l'utente lo apre se vuole le fonti. Persiste
+    // attraverso i cambi di basemap (setStyle non rimuove i control aggiunti).
+    map.addControl(
+      new maplibregl.AttributionControl({ compact: true }),
+      'bottom-right',
+    )
 
     // Aggiunge tutti i layer custom alla mappa. Idempotente (controlla
     // map.getLayer prima di addLayer) cosi' puo' essere richiamata dopo
@@ -3008,8 +3342,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    // L'overlay microclima ora è un BitmapLayer deck.gl ELEVATO alla quota
-    // (effetto "foglio che sale", vedi envBitmapLayer nei layer deck), non più
+    // L'overlay microclima ora è una SimpleMeshLayer che SEGUE il terreno
+    // (mesh env-sheet a quota_terreno+z, vedi envSheet nei layer deck), non più
     // una raster MapLibre drappeggiata sul terreno. Qui rimuovo solo eventuali
     // residui della vecchia sorgente immagine (es. dopo un hot-reload).
     const prevId = envOverlayIdRef.current
@@ -3144,41 +3478,25 @@ export default function MapViewer({ lang }: MapViewerProps) {
             ),
             // (I tetti rossi sono ora tinti nello shader degli edifici stessi —
             // vedi RoofTopColorExtension — niente piu' layer di tetti separato.)
-            // OVERLAY MICROCLIMA = foglio che SALE: BitmapLayer deck.gl elevato a
-            // ENV_GROUND_ELEV + quota(m) della banda scelta. Lo slider quota lo fa
-            // salire/scendere in 3D. MapLibre coords = [TL,TR,BR,BL]; deck bounds
-            // vuole [BL,TL,TR,BR], quindi riordino e aggiungo la z.
-            envOverlayImg
-              ? (() => {
-                  const c = envOverlayImg.coordinates
-                  // Quota VERA: suolo mediano + quota della banda (1.5 m = ~1.5 m
-                  // sul suolo). Il foglio è piatto a questa z; per non farlo
-                  // "sparire" dove il terreno è più alto, disattivo il test di
-                  // profondità (depthCompare 'always') -> dove andrebbe sotto il
-                  // terreno viene comunque disegnato SOPRA. È la richiesta
-                  // dell'utente ("se va sotto, mettilo sopra"), senza il costo di
-                  // un mesh che segue il rilievo.
-                  const z = ENV_GROUND_ELEV + envOverlayImg.zM
-                  const bounds: [
-                    [number, number, number],
-                    [number, number, number],
-                    [number, number, number],
-                    [number, number, number],
-                  ] = [
-                    [c[3][0], c[3][1], z],
-                    [c[0][0], c[0][1], z],
-                    [c[1][0], c[1][1], z],
-                    [c[2][0], c[2][1], z],
-                  ]
-                  return new BitmapLayer({
-                    id: 'env-bitmap',
-                    image: envOverlayImg.url,
-                    bounds,
-                    opacity: 0.85,
-                    pickable: false,
-                    parameters: { depthCompare: 'always' },
-                  })
-                })()
+            // OVERLAY MICROCLIMA = foglio che SEGUE IL TERRENO: SimpleMeshLayer
+            // texturizzata col PNG dell'overlay; la mesh è una griglia con OGNI
+            // vertice a `quota_terreno_reale + z_banda` (vedi envSheet /
+            // buildEnvSheetMesh). Depth test NORMALE: gli edifici lo occludono
+            // (niente raggi-X "sopra le case") e, essendo sempre ~z sopra il
+            // suolo, il terreno non lo "buca" più (niente zone vuote a 1.5/4.5 m).
+            envSheet && envOverlayImg
+              ? new SimpleMeshLayer({
+                  id: 'env-sheet',
+                  data: ENV_SHEET_DATA,
+                  mesh: envSheet.mesh,
+                  texture: envOverlayImg.url,
+                  getPosition: () => envSheet.anchor,
+                  getColor: [255, 255, 255, 255],
+                  opacity: 0.85,
+                  material: false, // niente luce: i colori del dato restano fedeli
+                  pickable: false,
+                  parameters: { depthCompare: 'less-equal' },
+                })
               : null,
             // Pallino PIATTO del punto cliccato, posato SUL foglio microclima
             // (alla sua quota): così torna "sul pannello" anche ora che il foglio
@@ -3191,7 +3509,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
                     [
                       probe.lon,
                       probe.lat,
-                      ENV_GROUND_ELEV + envOverlayImg.zM + 0.5,
+                      // Sul foglio: quota terreno REALE al punto + quota banda.
+                      (envSheet
+                        ? envSheet.elevAt(probe.lon, probe.lat)
+                        : envOverlayImg.groundAt(probe.lon, probe.lat)) +
+                        envOverlayImg.zM +
+                        0.5,
                     ],
                   ],
                   getPosition: (d) => d,
@@ -3278,9 +3601,9 @@ export default function MapViewer({ lang }: MapViewerProps) {
     envOverlayImg,
   ])
 
-  // (L'overlay microclima e' un BitmapLayer deck.gl elevato alla quota scelta —
-  // "foglio che sale" — costruito nell'array layers sopra; lo slider quota lo fa
-  // salire/scendere. Vedi envBitmapLayer / ENV_GROUND_ELEV.)
+  // (L'overlay microclima e' una SimpleMeshLayer che segue il terreno —
+  // costruita nell'array layers sopra; lo slider quota cambia l'immagine e la
+  // quota del foglio. Vedi envSheet / buildEnvSheetMesh.)
 
   // Basemap switcher: setStyle distrugge i source/layer custom, quindi dopo
   // 'style.load' ri-eseguo addCustomLayers (registrata in reapplyRef).
@@ -3424,19 +3747,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
     setSearching(true)
     const quartieriHits = matchQuartieri(q)
     try {
-      const url =
-        'https://nominatim.openstreetmap.org/search?format=jsonv2' +
-        '&limit=5&bounded=1&viewbox=11.25,44.55,11.45,44.45&q=' +
-        encodeURIComponent(`${q}, Bologna, Italia`)
-      const r = await fetch(url, { headers: { 'Accept-Language': 'it' } })
-      const data: { display_name: string; lat: string; lon: string }[] =
-        await r.json()
-      const addresses: SearchResult[] = data.map((d) => ({
-        type: 'address' as const,
-        label: d.display_name,
-        lat: Number(d.lat),
-        lon: Number(d.lon),
-      }))
+      const addresses = await geocodeBologna(q, lang)
       setSearchResults([...quartieriHits, ...addresses])
     } catch {
       setSearchResults(quartieriHits)
@@ -3476,37 +3787,24 @@ export default function MapViewer({ lang }: MapViewerProps) {
       return
     }
     const q = search.trim()
-    if (q.length < 3) {
+    if (q.length < 2) {
       setSearchResults([])
       return
     }
     const quartieriHits = matchQuartieri(q)
-    let cancelled = false
+    const ctrl = new AbortController()
+    // Debounce breve (Photon non ha il limite ~1 req/s di Nominatim) + abort
+    // della richiesta precedente a ogni tasto -> suggerimenti reattivi.
     const handle = setTimeout(async () => {
       try {
-        const url =
-          'https://nominatim.openstreetmap.org/search?format=jsonv2' +
-          '&limit=6&bounded=1&viewbox=11.25,44.55,11.45,44.45&q=' +
-          encodeURIComponent(`${q}, Bologna, Italia`)
-        const r = await fetch(url, {
-          headers: { 'Accept-Language': lang === 'en' ? 'en' : 'it' },
-        })
-        const data: { display_name: string; lat: string; lon: string }[] =
-          await r.json()
-        if (cancelled) return
-        const addresses: SearchResult[] = data.map((d) => ({
-          type: 'address' as const,
-          label: d.display_name,
-          lat: Number(d.lat),
-          lon: Number(d.lon),
-        }))
+        const addresses = await geocodeBologna(q, lang, ctrl.signal)
         setSearchResults([...quartieriHits, ...addresses])
       } catch {
-        if (!cancelled) setSearchResults(quartieriHits)
+        if (!ctrl.signal.aborted) setSearchResults(quartieriHits)
       }
-    }, 450)
+    }, 250)
     return () => {
-      cancelled = true
+      ctrl.abort()
       clearTimeout(handle)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3611,6 +3909,144 @@ export default function MapViewer({ lang }: MapViewerProps) {
     }
   }
 
+  // ── Paesaggio sonoro: decide il MIX dei suoni dal dato sotto il punto ────────
+  // Solo dentro la ZONA MICROCLIMA (bounds dell'overlay ENVI-met). Verde =
+  // uccelli e calma; strade rumorose (dato `noise`) = traffico; un filo di vento.
+  const computeSoundMix = (
+    lon: number,
+    lat: number,
+  ): { mix: SoundMix; label: string } | null => {
+    const map = mapRef.current
+    if (!map) return null
+    const b = (envimetRef.current ?? [])[0]?.bounds
+    if (b && (lon < b.west || lon > b.east || lat < b.south || lat > b.north)) {
+      return null // fuori dalla zona microclima -> silenzio
+    }
+    const pt = map.project([lon, lat])
+    // Verde: il punto è dentro un'area verde renderizzata?
+    let green = false
+    try {
+      green =
+        map.queryRenderedFeatures(pt, { layers: ['green-areas'] }).length > 0
+    } catch {}
+    // Traffico: massimo noise_db delle strade vicine (~45 m), dalla source
+    // 'noise' (querySourceFeatures funziona anche se il layer non è visibile).
+    let db = 0
+    try {
+      const feats = map.querySourceFeatures('noise')
+      const mLat = 110540
+      const mLon = 111320 * Math.cos((lat * Math.PI) / 180)
+      for (const f of feats) {
+        const val = Number(
+          (f.properties as { noise_db?: number } | null)?.noise_db ?? 0,
+        )
+        if (!(val > db)) continue
+        const g = f.geometry as {
+          type: string
+          coordinates: number[][] | number[][][]
+        }
+        const lines =
+          g.type === 'LineString'
+            ? [g.coordinates as number[][]]
+            : g.type === 'MultiLineString'
+              ? (g.coordinates as number[][][])
+              : []
+        let near = false
+        for (const line of lines) {
+          for (const c of line) {
+            const dx = (c[0] - lon) * mLon
+            const dy = (c[1] - lat) * mLat
+            if (dx * dx + dy * dy < 45 * 45) {
+              near = true
+              break
+            }
+          }
+          if (near) break
+        }
+        if (near) db = val
+      }
+    } catch {}
+    const traffic = db > 0 ? Math.max(0, Math.min(1, (db - 52) / (78 - 52))) : 0
+    const birds = green ? 0.9 : Math.max(0, 0.28 - traffic * 0.25)
+    const mix: SoundMix = {
+      traffic: 0.05 + traffic * 0.32,
+      birds,
+      wind: green ? 0.12 : 0.07,
+    }
+    const it = lang === 'it'
+    const label =
+      traffic > 0.45
+        ? it
+          ? 'strada trafficata'
+          : 'busy street'
+        : green
+          ? it
+            ? 'verde, tranquillo'
+            : 'greenery, calm'
+          : it
+            ? 'tessuto urbano'
+            : 'urban fabric'
+    return { mix, label }
+  }
+
+  const toggleSound = () => {
+    if (soundOn) {
+      soundRef.current?.stop()
+      soundRef.current = null
+      setSoundOn(false)
+      setSoundLabel(null)
+      return
+    }
+    const s = new Soundscape()
+    s.start() // gesto utente: ok per le policy di autoplay
+    s.resume()
+    soundRef.current = s
+    setSoundOn(true)
+  }
+
+  // Aggiorna il mix quando i suoni sono attivi e cambia il punto di ascolto
+  // (click = probe, altrimenti centro vista) o a fine spostamento mappa.
+  useEffect(() => {
+    if (!soundOn) return
+    const map = mapRef.current
+    const update = () => {
+      const s = soundRef.current
+      if (!s) return
+      let lon: number
+      let lat: number
+      if (probe) {
+        lon = probe.lon
+        lat = probe.lat
+      } else if (map) {
+        const c = map.getCenter()
+        lon = c.lng
+        lat = c.lat
+      } else return
+      const res = computeSoundMix(lon, lat)
+      if (res) {
+        s.setMix(res.mix)
+        setSoundLabel(res.label)
+      } else {
+        s.setMix({ traffic: 0, birds: 0, wind: 0 })
+        setSoundLabel(null)
+      }
+    }
+    update()
+    map?.on('moveend', update)
+    return () => {
+      map?.off('moveend', update)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soundOn, probe, envHeightBand, lang])
+
+  // Ferma l'audio allo smontaggio del componente.
+  useEffect(() => {
+    return () => {
+      soundRef.current?.stop()
+      soundRef.current = null
+    }
+  }, [])
+
   // Frazione 0..1 del download edifici (byte realmente letti / stima), bloccata
   // a 0.99 finche' il parse non e' concluso (vedi BUILDINGS_BYTES_EST).
   const buildingsFrac = buildingsReady
@@ -3669,10 +4105,10 @@ export default function MapViewer({ lang }: MapViewerProps) {
                     )}
                   </span>
                   <span className="flex flex-col min-w-0">
-                    <span className={s.done ? 'text-gray-300' : 'text-gray-400'}>
+                    <span className={s.done ? 'text-talea-300' : 'text-[#5a7a67]'}>
                       {s.label}
                     </span>
-                    <span className="text-gray-600 text-[10px] break-all leading-tight">
+                    <span className="text-[#7a9a87] text-[10px] break-all leading-tight">
                       {s.detail}
                     </span>
                   </span>
@@ -3703,7 +4139,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
           il menu basemap APRIBILE (pulsante + dropdown). */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-start gap-2">
         {/* Basemap: pulsante che apre/chiude il menu stili mappa. */}
-        <div className="relative shrink-0">
+        <div className="relative shrink-0" data-help="basemap">
           <button
             type="button"
             onClick={() => setBasemapOpen((o) => !o)}
@@ -3734,7 +4170,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                     className={`text-left text-xs font-mono px-2 py-1 rounded transition-colors ${
                       basemap === id
                         ? 'bg-talea-400/20 text-talea-300 border border-talea-400/50'
-                        : 'text-gray-300 hover:text-talea-300 hover:bg-talea-400/10 border border-transparent'
+                        : 'text-talea-300 hover:text-talea-300 hover:bg-talea-400/10 border border-transparent'
                     }`}
                   >
                     {BASEMAPS[id].label}
@@ -3748,6 +4184,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
         <div className="w-[min(420px,80vw)]">
         <form
           onSubmit={runSearch}
+          data-help="search"
           className="flex items-center gap-2 bg-talea-panel/90 border border-talea-400/30 rounded px-3 py-2 backdrop-blur-sm shadow-xl"
         >
           <span className="text-talea-400/70 text-sm">⌕</span>
@@ -3755,7 +4192,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('searchPlaceholder', lang)}
-            className="flex-1 bg-transparent text-sm text-gray-100 placeholder:text-gray-500 outline-none font-mono"
+            className="flex-1 bg-transparent text-sm text-talea-100 placeholder:text-[#7a9a87] outline-none font-mono"
           />
           {search && (
             <button
@@ -3766,7 +4203,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 searchMarkerRef.current?.remove()
                 searchMarkerRef.current = null
               }}
-              className="text-gray-500 hover:text-talea-300 text-sm"
+              className="text-[#7a9a87] hover:text-talea-300 text-sm"
               aria-label={t('clearSearch', lang)}
             >
               ✕
@@ -3775,7 +4212,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
           <button
             type="submit"
             disabled={searching}
-            className="text-talea-300 hover:text-talea-200 text-xs font-mono uppercase tracking-wider disabled:text-gray-600"
+            className="text-talea-300 hover:text-talea-200 text-xs font-mono uppercase tracking-wider disabled:text-[#7a9a87]"
           >
             {searching ? '...' : t('go', lang)}
           </button>
@@ -3790,7 +4227,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                   className={`w-full text-left px-3 py-2 text-xs hover:bg-talea-400/10 hover:text-talea-200 transition-colors border-b border-talea-400/10 last:border-0 ${
                     res.type === 'quartiere'
                       ? 'text-talea-300 font-mono'
-                      : 'text-gray-200'
+                      : 'text-talea-200'
                   }`}
                 >
                   {res.type === 'quartiere' ? '▣ ' : ''}
@@ -3831,6 +4268,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
       <button
         type="button"
         onClick={resetNorth}
+        data-help="compass"
         title={t('resetNorth', lang)}
         className="absolute top-4 right-2 sm:right-4 z-10 w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-talea-panel/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center hover:border-talea-400/60 transition-colors"
       >
@@ -3841,13 +4279,13 @@ export default function MapViewer({ lang }: MapViewerProps) {
           <span className="absolute top-0 left-1/2 -translate-x-1/2 text-sm font-bold text-red-400 leading-none">
             N
           </span>
-          <span className="absolute bottom-0 left-1/2 -translate-x-1/2 text-xs font-mono text-gray-300 leading-none">
+          <span className="absolute bottom-0 left-1/2 -translate-x-1/2 text-xs font-mono text-talea-300 leading-none">
             S
           </span>
-          <span className="absolute left-0 top-1/2 -translate-y-1/2 text-xs font-mono text-gray-300 leading-none">
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 text-xs font-mono text-talea-300 leading-none">
             {lang === 'it' ? 'O' : 'W'}
           </span>
-          <span className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-mono text-gray-300 leading-none">
+          <span className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-mono text-talea-300 leading-none">
             E
           </span>
           <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-5 bg-gradient-to-b from-red-400 to-gray-500 rounded" />
@@ -3897,7 +4335,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
               <button
                 key={f.properties.cod_quar}
                 onClick={() => jumpToQuartiere(f)}
-                className="text-left text-xs font-mono px-2 py-1 rounded transition-colors truncate text-gray-300 hover:text-talea-300 hover:bg-talea-400/10 border border-transparent"
+                className="text-left text-xs font-mono px-2 py-1 rounded transition-colors truncate text-talea-300 hover:text-talea-300 hover:bg-talea-400/10 border border-transparent"
                 title={f.properties.quartiere}
               >
                 {f.properties.quartiere}
@@ -3907,26 +4345,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
         </div>
       )}
 
-      {/* Toggle del pannello layer: stesso pattern di Zone, chevron
-          rotante a 90°. Sempre visibile, utile soprattutto su mobile
-          dove il pannello aperto coprirebbe meta' schermo. */}
-      <button
-        type="button"
-        onClick={() => setLayerPanelOpen((v) => !v)}
-        title={layerPanelOpen ? t('hideLayers', lang) : t('showLayers', lang)}
-        className="absolute top-20 left-2 sm:left-4 z-20 px-2.5 py-1.5 rounded bg-talea-panel/85 border border-talea-400/30 backdrop-blur-sm shadow-xl text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
-        aria-label="Toggle layer panel"
-      >
-        <span
-          className="inline-block transition-transform duration-200"
-          style={{
-            transform: layerPanelOpen ? 'rotate(90deg)' : 'rotate(0deg)',
-          }}
-        >
-          ▸
-        </span>
-        {t('layer', lang)}
-      </button>
+      {/* (Il toggle del pannello "Cosa vedere" è stato unito alla toolbar in alto
+          a sinistra insieme al bottone "Arredi urbani": vedi l'IIFE piu' sotto.) */}
 
       <div
         className={`absolute top-32 sm:top-32 left-2 sm:left-4 z-10 bg-talea-panel/85 border border-talea-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl ${
@@ -3953,7 +4373,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                   </span>
                   {t(cat.labelKey, lang)}
                 </span>
-                <span className="text-gray-500 text-[10px]">
+                <span className="text-[#7a9a87] text-[10px]">
                   {active}/{total}
                 </span>
               </button>
@@ -3979,7 +4399,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 <label
                   key={o.key}
                   className={`flex items-center gap-2 text-sm cursor-pointer hover:text-talea-300 ${
-                    dim ? 'text-gray-400' : 'text-gray-200'
+                    dim ? 'text-[#5a7a67]' : 'text-talea-200'
                   }`}
                   title={dim ? 'Dato tecnico ENVI-met' : undefined}
                 >
@@ -3998,7 +4418,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                   {!isCollapsed && (
                     <div className="flex flex-col gap-1.5 pl-4 pt-1 pb-1">
                       {ovs.length === 0 && (
-                        <span className="text-gray-500 text-[11px] font-mono">
+                        <span className="text-[#7a9a87] text-[11px] font-mono">
                           {lang === 'it' ? 'nessun dato' : 'no data'}
                         </span>
                       )}
@@ -4008,7 +4428,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                           microclima (non e' un overlay drappeggiato ma un
                           toggle `visibility`), reso a mano come riga dedicata. */}
                       <label
-                        className="flex items-center gap-2 text-sm cursor-pointer hover:text-talea-300 text-gray-200"
+                        className="flex items-center gap-2 text-sm cursor-pointer hover:text-talea-300 text-talea-200"
                         title="ENVI-met"
                       >
                         <input
@@ -4038,7 +4458,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                               </span>
                               {lang === 'it' ? 'Dati tecnici' : 'Technical data'}
                             </span>
-                            <span className="text-gray-500 text-[10px]">
+                            <span className="text-[#7a9a87] text-[10px]">
                               {techActive > 0 ? `${techActive} on` : techOvs.length}
                             </span>
                           </button>
@@ -4073,8 +4493,8 @@ export default function MapViewer({ lang }: MapViewerProps) {
                           key={l.id}
                           className={`flex items-center gap-2 text-sm transition-colors ${
                             disabled
-                              ? 'text-gray-500 cursor-not-allowed'
-                              : 'text-gray-200 cursor-pointer hover:text-talea-300'
+                              ? 'text-[#7a9a87] cursor-not-allowed'
+                              : 'text-talea-200 cursor-pointer hover:text-talea-300'
                           }`}
                         >
                           <input
@@ -4122,7 +4542,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
         const cur = heights[idx] ?? heights[0]
         return (
           // A DESTRA (centrata in verticale), come richiesto. Compatta.
-          <div className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1.5 bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl">
+          <div className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1.5 bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl" data-help="height">
             <div className="text-talea-400 text-[10px] font-mono uppercase tracking-widest">
               {lang === 'it' ? 'Quota' : 'Height'}
             </div>
@@ -4155,7 +4575,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
               style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
               aria-label={lang === 'it' ? 'Altezza dal suolo' : 'Height above ground'}
             />
-            <div className="text-gray-500 text-[9px] font-mono leading-none text-center">
+            <div className="text-[#7a9a87] text-[9px] font-mono leading-none text-center">
               {heights[0].z_m}–{heights[heights.length - 1].z_m} m
             </div>
           </div>
@@ -4195,7 +4615,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
               className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono border transition-colors ${
                 active
                   ? 'bg-talea-400/90 text-white border-talea-300'
-                  : 'bg-talea-panel-2/70 text-gray-200 border-talea-400/20 hover:border-talea-400/60'
+                  : 'bg-talea-panel-2/70 text-talea-200 border-talea-400/20 hover:border-talea-400/60'
               }`}
             >
               <span className="shrink-0 opacity-90"><ToolIcon id={tl.id} /></span>
@@ -4204,18 +4624,60 @@ export default function MapViewer({ lang }: MapViewerProps) {
           )
         }
         return (
-          <div className="absolute bottom-4 right-2 sm:right-4 z-20 flex flex-col items-end gap-1.5">
-            {insertPanelOpen && (
-              <div className="bg-talea-panel/90 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl w-[min(240px,calc(100vw-1rem))]">
+          <div className="absolute top-20 left-2 sm:left-4 z-20 flex items-start gap-2">
+            {/* Toggle del pannello "Cosa vedere" (ex "Layer"). */}
+            <button
+              type="button"
+              onClick={() => setLayerPanelOpen((v) => !v)}
+              data-help="layers"
+              title={layerPanelOpen ? t('hideLayers', lang) : t('showLayers', lang)}
+              className="px-2.5 py-1.5 rounded bg-talea-panel/85 border border-talea-400/30 backdrop-blur-sm shadow-xl text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5 shrink-0"
+              aria-label="Toggle layer panel"
+            >
+              <span
+                className="inline-block transition-transform duration-200"
+                style={{ transform: layerPanelOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              >
+                ▸
+              </span>
+              {t('layer', lang)}
+            </button>
+
+            {/* Arredi urbani (inserimento) — ACCANTO al pannello "Cosa vedere".
+                Il pannello strumenti si apre SOTTO il bottone. */}
+            <div className="relative shrink-0" data-help="arredi">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !insertPanelOpen
+                  setInsertPanelOpen(next)
+                  if (!next) {
+                    setInsertTool(null) // chiudendo, esci dalla modalita'
+                    setLineStart(null)
+                  }
+                }}
+                className={`px-3 py-1.5 rounded backdrop-blur-sm shadow-xl text-[11px] font-mono uppercase tracking-widest border transition-colors flex items-center gap-1.5 ${
+                  insertPanelOpen
+                    ? 'bg-talea-400/90 text-white border-talea-300'
+                    : 'bg-talea-panel/85 text-talea-300 border-talea-400/30 hover:text-talea-100 hover:border-talea-400/60'
+                }`}
+              >
+                <span className="text-sm leading-none">＋</span>
+                <span className="hidden sm:inline">
+                  {it ? 'Arredi urbani' : 'Street furniture'}
+                </span>
+              </button>
+              {insertPanelOpen && (
+              <div className="absolute top-full left-0 mt-1 z-30 bg-talea-panel/95 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl w-[min(240px,calc(100vw-1rem))]">
                 <div className="text-talea-400 text-[10px] font-mono uppercase tracking-widest mb-1.5">
                   {it ? 'Aggiungi alla scena' : 'Add to the scene'}
                 </div>
                 <div className="grid grid-cols-2 gap-1">{pointTools.map(toolBtn)}</div>
-                <div className="text-gray-500 text-[10px] font-mono uppercase tracking-wider mt-2 mb-1">
+                <div className="text-[#7a9a87] text-[10px] font-mono uppercase tracking-wider mt-2 mb-1">
                   {it ? 'A linea (2 clic)' : 'Line (2 clicks)'}
                 </div>
                 <div className="grid grid-cols-2 gap-1">{lineTools.map(toolBtn)}</div>
-                <div className="text-gray-400 text-[10px] leading-snug mt-2 min-h-[2.2em]">
+                <div className="text-[#5a7a67] text-[10px] leading-snug mt-2 min-h-[2.2em]">
                   {insertTool
                     ? insertTool.line
                       ? lineStart
@@ -4233,7 +4695,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                       : 'Pick an object, then click on the map.'}
                 </div>
                 <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-talea-400/15">
-                  <span className="text-gray-500 text-[10px] font-mono">
+                  <span className="text-[#7a9a87] text-[10px] font-mono">
                     {placed.length} {it ? 'posati' : 'placed'}
                   </span>
                   <div className="flex gap-1">
@@ -4244,7 +4706,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                         setLineStart(null)
                         setPlaced((p) => p.slice(0, -1))
                       }}
-                      className="px-2 py-0.5 rounded text-[11px] font-mono border border-talea-400/20 text-gray-200 hover:border-talea-400/60 disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="px-2 py-0.5 rounded text-[11px] font-mono border border-talea-400/20 text-talea-200 hover:border-talea-400/60 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       {it ? 'Annulla' : 'Undo'}
                     </button>
@@ -4256,33 +4718,15 @@ export default function MapViewer({ lang }: MapViewerProps) {
                         setSelectedPlaced(null)
                         setPlaced([])
                       }}
-                      className="px-2 py-0.5 rounded text-[11px] font-mono border border-talea-400/20 text-gray-200 hover:border-red-400/60 disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="px-2 py-0.5 rounded text-[11px] font-mono border border-talea-400/20 text-talea-200 hover:border-red-400/60 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       {it ? 'Svuota' : 'Clear'}
                     </button>
                   </div>
                 </div>
               </div>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                const next = !insertPanelOpen
-                setInsertPanelOpen(next)
-                if (!next) {
-                  setInsertTool(null) // chiudendo, esci dalla modalita'
-                  setLineStart(null)
-                }
-              }}
-              className={`px-3 py-1.5 rounded backdrop-blur-sm shadow-xl text-[11px] font-mono uppercase tracking-widest border transition-colors flex items-center gap-1.5 ${
-                insertPanelOpen
-                  ? 'bg-talea-400/90 text-white border-talea-300'
-                  : 'bg-talea-panel/85 text-talea-300 border-talea-400/30 hover:text-talea-100 hover:border-talea-400/60'
-              }`}
-            >
-              <span className="text-sm leading-none">＋</span>
-              {it ? 'Arredi urbani' : 'Street furniture'}
-            </button>
+              )}
+            </div>
           </div>
         )
       })()}
@@ -4303,10 +4747,10 @@ export default function MapViewer({ lang }: MapViewerProps) {
               lamp: 'Lamp', bollard: 'Bollard', railing: 'Railing',
             }
         const iconBtn =
-          'flex items-center justify-center w-7 h-7 rounded text-gray-100 border border-talea-400/25 hover:border-talea-400/70 hover:bg-talea-panel-2/60 transition-colors'
+          'flex items-center justify-center w-7 h-7 rounded text-talea-100 border border-talea-400/25 hover:border-talea-400/70 hover:bg-talea-panel-2/60 transition-colors'
         return (
           <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 bg-talea-panel/95 border border-amber-400/40 rounded-full pl-3 pr-1.5 py-1 backdrop-blur-sm shadow-xl">
-            <span className="text-amber-300 text-[11px] font-mono uppercase tracking-wider mr-1">
+            <span className="text-amber-600 text-[11px] font-mono uppercase tracking-wider mr-1">
               {KIND_LABEL[selectedPlacedObj.kind]}
             </span>
             <button type="button" onClick={() => rotateSelected(30)} className={iconBtn}
@@ -4345,12 +4789,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
           <div className="text-talea-300 text-sm font-bold uppercase tracking-widest mb-2">
             {lang === 'it' ? 'Benvenuto su Talea' : 'Welcome to Talea'}
           </div>
-          <p className="text-gray-200 text-sm leading-relaxed mb-2">
+          <p className="text-talea-200 text-sm leading-relaxed mb-2">
             {lang === 'it'
               ? 'Esplora il microclima del quartiere: scopri dove fa più caldo e quanto il verde rinfresca la città.'
               : 'Explore the neighbourhood microclimate: see where it gets hottest and how greenery cools the city.'}
           </p>
-          <ul className="text-gray-300 text-[13px] leading-relaxed text-left mb-3 space-y-1">
+          <ul className="text-talea-300 text-[13px] leading-relaxed text-left mb-3 space-y-1">
             <li>
               {lang === 'it'
                 ? '① Scegli un dato dal pannello a sinistra'
@@ -4367,7 +4811,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 : '③ Drag to rotate the 3D view'}
             </li>
           </ul>
-          <p className="text-gray-500 text-[10px] leading-snug mb-3">
+          <p className="text-[#7a9a87] text-[10px] leading-snug mb-3">
             {lang === 'it'
               ? 'I dati sono una simulazione di una giornata estiva tipo, non il meteo di oggi.'
               : 'Data is a simulation of a typical summer day, not today’s weather.'}
@@ -4402,7 +4846,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
           onClick={() => setShowGuide(false)}
         >
           <div
-            className="w-[min(560px,calc(100vw-1.5rem))] max-h-[85vh] overflow-y-auto bg-talea-panel/97 border border-talea-400/40 rounded-lg p-5 backdrop-blur-md shadow-2xl"
+            className="w-[min(760px,calc(100vw-1.5rem))] max-h-[88vh] overflow-y-auto bg-talea-panel/97 border border-talea-400/40 rounded-lg p-5 backdrop-blur-md shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between mb-3">
@@ -4412,14 +4856,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
               <button
                 type="button"
                 onClick={() => setShowGuide(false)}
-                className="text-gray-400 hover:text-talea-200 text-xl leading-none -mt-1"
+                className="text-[#5a7a67] hover:text-talea-200 text-xl leading-none -mt-1"
                 aria-label={lang === 'it' ? 'Chiudi' : 'Close'}
               >
                 ✕
               </button>
             </div>
 
-            <p className="text-gray-200 text-sm leading-relaxed mb-4">
+            <p className="text-talea-200 text-sm leading-relaxed mb-4">
               {lang === 'it'
                 ? 'Questa mappa 3D mostra il microclima di un quartiere di Bologna in una giornata estiva tipo: dove fa più caldo, dove il verde e il vento rinfrescano, quanto “scotta” davvero stare al sole. I dati vengono da una simulazione scientifica (ENVI-met), non sono il meteo di oggi.'
                 : 'This 3D map shows the microclimate of a Bologna neighbourhood on a typical summer day: where it gets hottest, where greenery and wind cool things down, how much the sun really “burns”. The data comes from a scientific simulation (ENVI-met), it is not today’s weather.'}
@@ -4441,7 +4885,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                     <span aria-hidden="true">{icon}</span>
                     {title}
                   </div>
-                  <div className="text-gray-300 text-[13px] leading-relaxed">
+                  <div className="text-talea-300 text-[13px] leading-relaxed">
                     {children}
                   </div>
                 </div>
@@ -4469,39 +4913,76 @@ export default function MapViewer({ lang }: MapViewerProps) {
                       : 'Drag to rotate, use two fingers or the wheel to zoom and tilt. The compass on the top right resets North up. Search a street or district from the search bar at the top.'}
                   </Section>
 
+                  {/* I COMANDI E I PANNELLI: una card per ogni elemento dell'UI
+                      e cosa fa — come l'help dei siti Talea (historysuhi/sci):
+                      "ti fa vedere i pannelli e cosa fa ognuno". */}
+                  <div className="border-t border-talea-400/15 mt-1 pt-3 mb-1">
+                    <div className="text-talea-200 text-sm font-semibold mb-2">
+                      {it ? 'I comandi e i pannelli' : 'Controls & panels'}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {(
+                        [
+                          [['Cosa vedere', 'What to see'], ['Pannello a sinistra: accendi i dati da mostrare — microclima, edifici, verde, ambiente.', 'Left panel: turn on the data to show — microclimate, buildings, greenery, environment.']],
+                          [['Ricerca', 'Search'], ['In alto: cerca una via o un quartiere di Bologna, con suggerimenti mentre scrivi.', 'Top: search a Bologna street or district, with suggestions as you type.']],
+                          [['Slider quota', 'Height slider'], ['A destra quando un dato microclima è acceso: vedi il dato dal livello strada (1,5 m) fin sopra i tetti.', 'On the right when a microclimate layer is on: see the data from street level (1.5 m) up above the rooftops.']],
+                          [['Legenda', 'Legend'], ['In basso a destra: la scala dei colori del dato attivo, con i valori minimo e massimo.', 'Bottom right: the colour scale of the active layer, with min and max values.']],
+                          [['Mappa di base', 'Base map'], ['Pulsante mappa in alto: cambia lo sfondo — mappa, scuro, satellite, ortofoto.', 'Map button on top: switch the background — map, dark, satellite, orthophoto.']],
+                          [['Bussola', 'Compass'], ['In alto a destra: mostra l’orientamento; cliccala per rimettere il Nord in su.', 'Top right: shows orientation; click it to reset North up.']],
+                          [['Sole e orario', 'Sun & time'], ['Slider in basso: sposta il sole nell’arco della giornata e guarda come cambiano le ombre.', 'Bottom slider: move the sun through the day and watch the shadows change.']],
+                          [['Arredi urbani', 'Street furniture'], ['Accanto a “Cosa vedere”: aggiungi alla scena panchine, alberi, fontane e altro.', 'Next to “What to see”: add benches, trees, fountains and more to the scene.']],
+                          [['Meteo', 'Weather'], ['Pulsante in basso: il meteo attuale di Bologna (3BMeteo).', 'Bottom button: Bologna’s current weather (3BMeteo).']],
+                          [['Vista pulita, foto, condividi', 'Clean view, photo, share'], ['In basso a sinistra: nascondi i pannelli, scarica uno screenshot 3D o condividi la vista.', 'Bottom left: hide the panels, download a 3D screenshot or share the view.']],
+                        ] as [[string, string], [string, string]][]
+                      ).map(([title, desc], i) => (
+                        <div
+                          key={i}
+                          className="border border-talea-400/20 rounded bg-talea-panel-2/40 p-2.5"
+                        >
+                          <strong className="text-talea-100 text-[13px] block leading-tight">
+                            {it ? title[0] : title[1]}
+                          </strong>
+                          <p className="text-talea-300 text-[12px] leading-snug mt-1">
+                            {it ? desc[0] : desc[1]}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="border-t border-talea-400/15 mt-1 pt-3">
                     <div className="text-talea-200 text-sm font-semibold mb-2">
                       {it ? 'Cosa significano i dati' : 'What the data means'}
                     </div>
-                    <ul className="text-gray-300 text-[13px] leading-relaxed space-y-1.5">
+                    <ul className="text-talea-300 text-[13px] leading-relaxed space-y-1.5">
                       <li>
-                        <b className="text-gray-100">{it ? 'Temperatura dell’aria' : 'Air temperature'}</b>{' '}
+                        <b className="text-talea-100">{it ? 'Temperatura dell’aria' : 'Air temperature'}</b>{' '}
                         — {it ? 'quanto è calda l’aria all’altezza delle persone.' : 'how hot the air is at human height.'}
                       </li>
                       <li>
-                        <b className="text-gray-100">{it ? 'Temperatura percepita' : 'Perceived temperature'}</b>{' '}
+                        <b className="text-talea-100">{it ? 'Temperatura percepita' : 'Perceived temperature'}</b>{' '}
                         — {it ? 'il caldo che senti davvero: aria + sole + calore di muri e asfalto. È l’indice più “umano”.' : 'the heat you actually feel: air + sun + heat from walls and pavement. The most “human” index.'}
                       </li>
                       <li>
-                        <b className="text-gray-100">{it ? 'Umidità' : 'Humidity'}</b>{' '}
+                        <b className="text-talea-100">{it ? 'Umidità' : 'Humidity'}</b>{' '}
                         — {it ? 'quanto è afosa l’aria.' : 'how muggy the air is.'}
                       </li>
                       <li>
-                        <b className="text-gray-100">{it ? 'Sole e luce' : 'Sun & light'}</b>{' '}
+                        <b className="text-talea-100">{it ? 'Sole e luce' : 'Sun & light'}</b>{' '}
                         — {it ? 'quanto sole diretto, diffuso o riflesso colpisce le strade.' : 'how much direct, diffuse or reflected sun hits the streets.'}
                       </li>
                       <li>
-                        <b className="text-gray-100">{it ? 'Vento' : 'Wind'}</b>{' '}
+                        <b className="text-talea-100">{it ? 'Vento' : 'Wind'}</b>{' '}
                         — {it ? 'quanto soffia: porta via il caldo e rinfresca.' : 'how strong it blows: it carries heat away and cools.'}
                       </li>
                       <li>
-                        <b className="text-gray-100">{it ? 'Verde' : 'Greenery'}</b>{' '}
+                        <b className="text-talea-100">{it ? 'Verde' : 'Greenery'}</b>{' '}
                         — {it ? 'dove la chioma degli alberi fa ombra e frescura.' : 'where tree canopy gives shade and cooling.'}
                       </li>
                     </ul>
                   </div>
 
-                  <p className="text-gray-500 text-[11px] leading-snug mt-4">
+                  <p className="text-[#7a9a87] text-[11px] leading-snug mt-4">
                     {it
                       ? 'I dati microclima sono una fotografia simulata di un istante (una giornata estiva tipo), utile a confrontare le zone fra loro, non una previsione del tempo.'
                       : 'The microclimate data is a simulated snapshot of one moment (a typical summer day), useful to compare areas with each other, not a weather forecast.'}
@@ -4517,6 +4998,105 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 className="px-6 py-1.5 rounded bg-talea-400 text-white text-sm font-bold uppercase tracking-wider hover:bg-talea-300 transition-colors"
               >
                 {lang === 'it' ? 'Ho capito' : 'Got it'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODALITÀ AIUTO (annotazioni) ──────────────────────────────────────
+          Come l'help di talea.comune.bologna.it/historysuhi: ogni comando
+          marcato con `data-help` viene contornato da un TRATTEGGIO GIALLO e
+          accanto compare una card con cosa fa, su sfondo scurito + banner in
+          alto. I rettangoli sono misurati in `helpRects`. L'overlay non blocca i
+          click (pointer-events-none): si esce dal banner. */}
+      {helpOpen && (
+        <div className="fixed inset-0 z-[60] pointer-events-none">
+          <div className="absolute inset-0 bg-[#00280d]/55" />
+
+          {helpRects.map(({ key, rect }, i) => {
+            const info = HELP_INFO[key]
+            if (!info) return null
+            const L = lang === 'it' ? 0 : 1
+            const vw = window.innerWidth
+            const vh = window.innerHeight
+            const CARD_W = 250
+            const clamp = (x: number, lo: number, hi: number) =>
+              Math.max(lo, Math.min(hi, x))
+            const card: CSSProperties = { width: CARD_W }
+            if (info.side === 'below') {
+              card.top = rect.bottom + 10
+              card.left = clamp(rect.left, 8, vw - CARD_W - 8)
+            } else if (info.side === 'above') {
+              card.bottom = vh - rect.top + 10
+              card.left = clamp(rect.left, 8, vw - CARD_W - 8)
+            } else if (info.side === 'left') {
+              card.top = clamp(rect.top, 8, vh - 110)
+              card.right = vw - rect.left + 10
+            } else {
+              card.top = clamp(rect.top, 8, vh - 110)
+              card.left = clamp(rect.right + 10, 8, vw - CARD_W - 8)
+            }
+            return (
+              <div key={key + i}>
+                {/* contorno giallo tratteggiato attorno al comando */}
+                <div
+                  className="absolute rounded-md"
+                  style={{
+                    left: rect.left - 4,
+                    top: rect.top - 4,
+                    width: rect.width + 8,
+                    height: rect.height + 8,
+                    border: '2px dashed var(--talea-yellow)',
+                    boxShadow: '0 0 0 2px rgba(255, 230, 4, 0.18)',
+                  }}
+                />
+                {/* card descrittiva */}
+                <div
+                  className="absolute flex items-start gap-2 rounded-md border border-talea-green bg-white px-3 py-2 shadow-2xl"
+                  style={card}
+                >
+                  <span className="shrink-0 grid place-items-center w-5 h-5 rounded-full bg-talea-green-dark text-talea-yellow text-[10px] font-bold">
+                    {i + 1}
+                  </span>
+                  <span className="text-[12px] leading-snug text-[#1f3d2a]">
+                    <b className="text-talea-green-dark">{info.label[L]}</b>
+                    {' — '}
+                    {info.text[L]}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Banner: titolo + "Guida completa" (apre il modale) + chiudi. */}
+          <div className="pointer-events-auto fixed top-3 left-1/2 -translate-x-1/2 z-[61] flex items-center gap-3 w-[min(720px,calc(100vw-1.5rem))] rounded-2xl border border-talea-green bg-[#fffbf1]/95 px-4 py-2.5 backdrop-blur-md shadow-2xl">
+            <span className="flex items-center gap-2 text-[13px] font-semibold text-[#17231a] min-w-0">
+              <span aria-hidden="true">💡</span>
+              <span className="truncate">
+                {lang === 'it'
+                  ? 'Modalità aiuto: ogni riquadro giallo spiega un comando.'
+                  : 'Help mode: each yellow box explains a control.'}
+              </span>
+            </span>
+            <div className="ml-auto flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  onHelpOpenChange(false)
+                  setShowGuide(true)
+                }}
+                className="px-3 py-1.5 rounded-full bg-talea-green-dark text-white text-[12px] font-bold hover:bg-[#0d533f] transition-colors"
+              >
+                {lang === 'it' ? 'Guida completa' : 'Full guide'}
+              </button>
+              <button
+                type="button"
+                onClick={() => onHelpOpenChange(false)}
+                aria-label={lang === 'it' ? 'Chiudi aiuto' : 'Close help'}
+                className="w-9 h-9 grid place-items-center rounded-full border border-talea-400/30 bg-white text-[#17231a] hover:border-talea-green hover:text-talea-green-dark transition-colors text-lg leading-none"
+              >
+                ✕
               </button>
             </div>
           </div>
@@ -4566,16 +5146,17 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 />
               </div>
             )}
-            {/* Legenda: in basso a destra ma SOLLEVATA (bottom-24) così non copre
-                la toolbar "Aggiungi" sotto; max-height limitata a ~mezza altezza
-                per non invadere il pannello quota (centro-destra). */}
+            {/* Legenda: in basso a destra, a filo del fondo (bottom-4). Il
+                bottone "Arredi urbani" e' stato spostato a sinistra, quindi qui
+                sotto ora c'e' spazio libero e la legenda ci sta tutta. Scrolla
+                se molto alta (overflow-y-auto). */}
             {showLegend && (
-              <div className="absolute bottom-24 right-2 sm:right-4 z-10 w-[min(260px,calc(100vw-1rem))] max-h-[calc(50vh-4rem)] overflow-y-auto bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl">
+              <div className="absolute bottom-4 right-2 sm:right-4 z-10 w-[min(260px,calc(100vw-1rem))] max-h-[calc(100vh-9rem)] overflow-y-auto bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl" data-help="legend">
                 <div className="text-talea-400 text-[10px] font-mono uppercase tracking-widest mb-1.5 px-0.5">
                   {t('legend', lang)}
                 </div>
                 {showEnvDate && (
-                  <div className="text-gray-400 text-[10px] leading-snug mb-1.5 px-0.5 border-b border-talea-400/20 pb-1.5">
+                  <div className="text-[#5a7a67] text-[10px] leading-snug mb-1.5 px-0.5 border-b border-talea-400/20 pb-1.5">
                     {lang === 'it'
                       ? `Simulazione ENVI-met · ${envDate} (dato fisso, non varia col giorno reale)`
                       : `ENVI-met simulation · ${envDate} (fixed snapshot, not the live day)`}
@@ -4584,7 +5165,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                 <div className="flex flex-col gap-2">
                   {showBuildingTemp && (mrtOv ?? tempOv) && (
                     <div>
-                      <div className="text-gray-200 text-[11px] font-mono mb-0.5">
+                      <div className="text-talea-200 text-[11px] font-mono mb-0.5">
                         {lang === 'it'
                           ? 'Edifici · temperatura percepita'
                           : 'Buildings · perceived temp.'}{' '}
@@ -4594,7 +5175,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                         className="h-2 rounded"
                         style={{ background: gradient((mrtOv ?? tempOv)!.legend) }}
                       />
-                      <div className="flex justify-between text-gray-400 text-[10px] font-mono mt-0.5">
+                      <div className="flex justify-between text-[#5a7a67] text-[10px] font-mono mt-0.5">
                         <span>
                           {Math.round(
                             ((mrtOv ?? tempOv)!.observed ?? (mrtOv ?? tempOv)!.range).min,
@@ -4606,7 +5187,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                           )}
                         </span>
                       </div>
-                      <p className="text-gray-400 text-[10px] leading-snug mt-1">
+                      <p className="text-[#5a7a67] text-[10px] leading-snug mt-1">
                         {lang === 'it'
                           ? 'Quanto “scotta” la facciata (sole + calore delle superfici): sale lungo l’altezza dell’edificio. Grigio = fuori dall’area ENVI-met.'
                           : 'How hot the facade “feels” (sun + surface heat): it varies up the building’s height. Grey = outside the ENVI-met area.'}
@@ -4615,14 +5196,14 @@ export default function MapViewer({ lang }: MapViewerProps) {
                   )}
                   {showNoise && (
                     <div>
-                      <div className="text-gray-200 text-[11px] font-mono mb-0.5">
+                      <div className="text-talea-200 text-[11px] font-mono mb-0.5">
                         {lang === 'it' ? 'Rumore (stima)' : 'Noise (est.)'} (dB)
                       </div>
                       <div
                         className="h-2 rounded"
                         style={{ background: `linear-gradient(to right, ${NOISE_GRAD})` }}
                       />
-                      <div className="flex justify-between text-gray-400 text-[10px] font-mono mt-0.5">
+                      <div className="flex justify-between text-[#5a7a67] text-[10px] font-mono mt-0.5">
                         <span>50</span>
                         <span>78</span>
                       </div>
@@ -4630,7 +5211,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
                   )}
                   {activeEnv.map((o) => (
                     <div key={o.key}>
-                      <div className="text-gray-200 text-[11px] font-mono mb-0.5">
+                      <div className="text-talea-200 text-[11px] font-mono mb-0.5">
                         {envLabel(o, lang)} ({o.unit})
                         {(o.heights?.length ?? 0) > 0 && (
                           <span className="text-talea-300">
@@ -4645,12 +5226,12 @@ export default function MapViewer({ lang }: MapViewerProps) {
                         className="h-2 rounded"
                         style={{ background: gradient(o.legend) }}
                       />
-                      <div className="flex justify-between text-gray-400 text-[10px] font-mono mt-0.5">
+                      <div className="flex justify-between text-[#5a7a67] text-[10px] font-mono mt-0.5">
                         <span>{o.range.min}</span>
                         <span>{o.range.max}</span>
                       </div>
                       {ENV_DESC[o.key] && (
-                        <p className="text-gray-400 text-[10px] leading-snug mt-1">
+                        <p className="text-[#5a7a67] text-[10px] leading-snug mt-1">
                           {ENV_DESC[o.key][lang]}
                         </p>
                       )}
@@ -4669,7 +5250,7 @@ export default function MapViewer({ lang }: MapViewerProps) {
           in RIGA ORIZZONTALE (prima era una colonna verticale alta che finiva
           sotto il pannello layer). Cosi' occupano poca altezza e lasciano spazio.
           Vista pulita nasconde i pannelli; screenshot scarica la scena 3D. */}
-      <div className="absolute bottom-4 left-2 sm:left-4 z-20 flex flex-row gap-2">
+      <div className="absolute bottom-4 left-2 sm:left-4 z-20 flex flex-row gap-2" data-help="controls">
         <button
           type="button"
           onClick={() => setUiHidden((v) => !v)}
@@ -4767,17 +5348,54 @@ export default function MapViewer({ lang }: MapViewerProps) {
             <path d="M17.5 19H8.2a3.7 3.7 0 0 1-.4-7.38 5 5 0 0 1 9.46 1.9A3.2 3.2 0 0 1 17.5 19Z" />
           </svg>
         </button>
-        {/* Guida: riapre la spiegazione del sito in qualsiasi momento. */}
+        {/* Suoni: paesaggio sonoro della zona microclima (verde = uccelli,
+            strade = traffico). Sintetizzato, niente file audio. */}
         <button
           type="button"
-          onClick={() => setShowGuide(true)}
-          title={lang === 'it' ? 'Guida' : 'Guide'}
-          aria-label={lang === 'it' ? 'Apri la guida' : 'Open the guide'}
-          className="w-10 h-10 rounded-full bg-talea-panel/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors font-bold text-lg leading-none"
+          onClick={toggleSound}
+          data-help="sound"
+          title={lang === 'it' ? 'Suoni della zona' : 'Area soundscape'}
+          aria-label={lang === 'it' ? 'Attiva/disattiva i suoni' : 'Toggle area sounds'}
+          aria-pressed={soundOn}
+          className={`w-10 h-10 rounded-full bg-talea-panel/85 border backdrop-blur-sm shadow-xl flex items-center justify-center transition-colors ${
+            soundOn
+              ? 'border-talea-400/60 text-talea-100'
+              : 'border-talea-400/30 text-talea-300 hover:text-talea-100 hover:border-talea-400/60'
+          }`}
         >
-          ?
+          {soundOn ? (
+            // altoparlante con onde
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M11 5 6 9H2v6h4l5 4z" />
+              <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+              <path d="M19 5a9 9 0 0 1 0 14" />
+            </svg>
+          ) : (
+            // altoparlante sbarrato (muto)
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M11 5 6 9H2v6h4l5 4z" />
+              <line x1="22" y1="9" x2="16" y2="15" />
+              <line x1="16" y1="9" x2="22" y2="15" />
+            </svg>
+          )}
         </button>
+        {/* (Il tasto "Guida" è stato spostato nell'header, a sinistra del
+            toggle lingua: vedi explore/page.tsx.) */}
       </div>
+
+      {/* Indicatore "stai ascoltando": cosa suona la zona sotto il punto. */}
+      {soundOn && (
+        <div className="absolute bottom-16 left-2 sm:left-4 z-20 flex items-center gap-2 px-3 py-1.5 rounded-full bg-talea-panel/90 border border-talea-400/30 backdrop-blur-sm shadow-xl text-[11px] text-talea-200">
+          <span aria-hidden="true">🔊</span>
+          {soundLabel
+            ? lang === 'it'
+              ? `Ascolti: ${soundLabel}`
+              : `Hearing: ${soundLabel}`
+            : lang === 'it'
+              ? 'Spostati sulla zona microclima'
+              : 'Move onto the microclimate area'}
+        </div>
+      )}
 
       {/* Pannello meteo: widget 3BMeteo. Nascosto in vista pulita come gli altri. */}
       {meteoOpen && !uiHidden && (

@@ -50,9 +50,9 @@ export default function Home() {
         </h1>
 
         <div className="flex items-center gap-4 w-64">
-          <div className="flex-1 h-px bg-talea-300" />
-          <div className="w-2 h-2 rotate-45 bg-talea-300" />
-          <div className="flex-1 h-px bg-talea-300" />
+          <div className="flex-1 h-px bg-[#5ba4dc]" />
+          <div className="w-2 h-2 rotate-45 bg-[#5ba4dc]" />
+          <div className="flex-1 h-px bg-[#5ba4dc]" />
         </div>
 
         <p
@@ -68,18 +68,18 @@ export default function Home() {
 
         <Link
           href="/explore"
-          className="group relative mt-3 px-12 py-4 border-2 border-talea-300 bg-talea-400/15 text-white text-sm uppercase font-bold cursor-pointer overflow-hidden backdrop-blur-sm transition-all duration-300 hover:text-black hover:border-talea-200 active:scale-95"
+          className="group relative mt-3 px-12 py-4 border-2 border-[#5ba4dc] bg-talea-400/15 text-white text-sm uppercase font-bold cursor-pointer overflow-hidden backdrop-blur-sm transition-all duration-300 hover:text-black hover:border-[#a9cfee] active:scale-95"
           style={{
             fontFamily: 'monospace',
             letterSpacing: '0.4em',
             textShadow: '0 1px 6px rgba(0,0,0,0.8)',
           }}
         >
-          <span className="absolute inset-0 bg-talea-300 translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-in-out" />
-          <span className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-talea-200" />
-          <span className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-talea-200" />
-          <span className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-talea-200" />
-          <span className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-talea-200" />
+          <span className="absolute inset-0 bg-[#5ba4dc] translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-in-out" />
+          <span className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-[#a9cfee]" />
+          <span className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-[#a9cfee]" />
+          <span className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-[#a9cfee]" />
+          <span className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-[#a9cfee]" />
           <span className="relative z-10">{explore}</span>
         </Link>
       </div>

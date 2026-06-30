@@ -154,13 +154,23 @@ L'overlay è un **`BitmapLayer` deck.gl** posato a `ENV_GROUND_ELEV (56.9 m, =
 **solleva fisicamente** in 3D. L'esagerazione del terreno è 1, quindi i metri
 deck combaciano col terreno.
 
-Dentro il dominio il terreno varia **~26 m** (da ~41 a ~67 m s.l.m.): un foglio
-piatto alla quota vera, alle bande basse (1,5 / 4,5 m), verrebbe "bucato" dal
-terreno in salita. Per evitarlo il foglio è disegnato con `depthCompare:
-'always'`: dove starebbe **sotto** il terreno viene comunque disegnato **sopra**.
-Compromesso: da angolazione obliqua il foglio piatto può sovrascrivere
-terreno/edifici che gli stanno davanti (effetto raggi-X); la resa "che segue le
-colline" richiederebbe un mesh tassellato (lavoro futuro).
+Dentro il dominio il terreno ha una **pendenza reale N–S** (~13 m: bordo nord
+~48 m, bordo sud ~61 m s.l.m.; range totale ~26 m). Un foglio **orizzontale** alla
+sola quota mediana, alle bande basse (1,5 / 4,5 m), al bordo sbaglierebbe di ~10 m
+(galleggia a nord, va sottoterra a sud → "1,5 m" sembra sbagliato).
+
+**Aggiornato (fine giugno 2026): il foglio ora è INCLINATO.** `build_envimet_overlays.py`
+fa un fit ai minimi quadrati di un **piano del suolo** `elev = a + b·lon + c·lat`
+sui `base_elev` degli edifici nel dominio e lo salva in `overlays.json`
+(`ground_plane`). Il viewer assegna a ciascuno dei **4 angoli** del `BitmapLayer`
+la quota `suolo_locale(angolo) + z_banda`, così il foglio **segue la pendenza**:
+a 1,5 m sta ~1,5 m sul suolo ovunque (residuo del fit ~2 m, vs ~10 m del foglio
+piatto). Il pallino del punto cliccato usa lo stesso piano.
+
+Resta `depthCompare: 'always'` (dove il foglio finirebbe sotto il terreno viene
+disegnato **sopra**, niente "buchi"). Il piano cattura solo la pendenza media:
+ondulazioni non planari (residuo ~2 m) e l'effetto raggi-X da angolazioni molto
+oblique richiederebbero ancora un mesh tassellato (lavoro futuro).
 
 Il punto cliccato è un **disco piatto deck.gl** (`env-probe-dot`) posato sul
 foglio alla sua quota; il marker DOM a terra è nascosto quando un foglio è

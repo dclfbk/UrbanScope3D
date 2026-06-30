@@ -9,7 +9,7 @@ export type Lang = 'it' | 'en'
 
 export const STRINGS = {
   // Pannelli
-  layer: { it: 'Layer', en: 'Layers' },
+  layer: { it: 'Cosa vedere', en: 'What to see' },
   zone: { it: 'Quartieri', en: 'Districts' },
   basemap: { it: 'Basemap', en: 'Basemap' },
 
@@ -73,8 +73,8 @@ export const STRINGS = {
   legend: { it: 'Legenda', en: 'Legend' },
 
   // Panel toggles
-  showLayers: { it: 'Mostra pannello layer', en: 'Show layer panel' },
-  hideLayers: { it: 'Nascondi pannello layer', en: 'Hide layer panel' },
+  showLayers: { it: 'Mostra «Cosa vedere»', en: 'Show panel' },
+  hideLayers: { it: 'Nascondi «Cosa vedere»', en: 'Hide panel' },
   showZones: { it: 'Mostra zone', en: 'Show areas' },
   hideZones: { it: 'Nascondi zone', en: 'Hide areas' },
 

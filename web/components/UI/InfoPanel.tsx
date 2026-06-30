@@ -36,13 +36,13 @@ export default function InfoPanel({
         </div>
         <button
           onClick={onClose}
-          className="text-gray-400 hover:text-talea-300 text-base leading-none"
+          className="text-[#5a7a67] hover:text-talea-300 text-base leading-none"
           aria-label={t('close', lang)}
         >
           &times;
         </button>
       </div>
-      <div className="text-xs font-mono text-gray-300">
+      <div className="text-xs font-mono text-talea-300">
         {lat.toFixed(5)}, {lon.toFixed(5)}
       </div>
 
@@ -59,10 +59,10 @@ export default function InfoPanel({
               </span>
             )}
           </div>
-          <div className="text-gray-200 text-sm font-mono flex flex-col gap-0.5">
+          <div className="text-talea-200 text-sm font-mono flex flex-col gap-0.5">
             {envSamples.map((s) => (
               <div key={s.key} className="flex justify-between gap-2">
-                <span className="text-gray-400">{s.label}</span>
+                <span className="text-[#5a7a67]">{s.label}</span>
                 <span className="text-talea-200 whitespace-nowrap">
                   {s.value != null ? `${s.value} ${s.unit}` : t('noData', lang)}
                 </span>

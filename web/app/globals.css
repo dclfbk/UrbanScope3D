@@ -1,61 +1,97 @@
 @import "tailwindcss";
 
+/* ----------------------------------------------------------------------
+   Brand Talea — design system del sito ufficiale (talea.comune.bologna.it,
+   app "sci" / "historysuhi"). Tema CHIARO: sfondo bianco-verdino, card
+   bianche, testo verde scuro, accenti blu/verde, font Inter.
+   Colori di brand (TALEA_BRAND GUIDELINE.pdf):
+     Blu #1272B7 · Verde #21A84A · Verde scuro #004D19 · Giallo #FFE604
+   I token qui sotto sono ripresi 1:1 dal :root del sito Talea.
+   ---------------------------------------------------------------------- */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --talea-dark-green: #004d19;
+  --talea-green: #21a84a;
+  --talea-blue: #1272b7;
+  --talea-yellow: #ffe604;
+
+  --bg-primary: #f7f9f7; /* sfondo pagina (bianco-verdino) */
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f4f0;
+  --bg-card: #ffffff;
+  --bg-hover: #e8f0e8;
+
+  --text-primary: #004d19; /* verde scuro — testo principale */
+  --text-secondary: #2d5a3d;
+  --text-muted: #7a9a87;
+  --text-inverse: #ffffff;
+
+  --border-color: #d4e4d8;
+  --border-focus: #21a84a;
+
+  /* Ombre tenui sfumate di verde (come Talea), non grigie neutre. */
+  --shadow-sm: 0 1px 3px rgba(0, 77, 25, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 77, 25, 0.08);
+  --shadow-lg: 0 8px 30px rgba(0, 77, 25, 0.1);
+
+  --background: var(--bg-primary);
+  --foreground: var(--text-primary);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-calibre), var(--font-hanken), var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Inter = font dei siti Talea. Calibre Semibold (brand) resta come fallback
+     ravvicinato per i display; Inter copre tutta la UI. */
+  --font-sans: var(--font-inter), var(--font-calibre), var(--font-hanken), system-ui, sans-serif;
+  /* I siti Talea NON usano monospace: rimappo `font-mono` su Inter cosi' le
+     molte classi `font-mono` ereditate dalla vecchia UI scura diventano Inter
+     senza doverle toccare una per una. */
+  --font-mono: var(--font-inter), var(--font-calibre), system-ui, sans-serif;
 }
 
-/* ----------------------------------------------------------------------
-   Brand Talea (manuale d'immagine, TALEA_BRAND GUIDELINE.pdf).
-   Blu #1272B7 / Verde #21A84A / Verde scuro #004D19 / Giallo #FFE604.
-   La UI usa il BLU come colore primario: la scala `talea-*` qui sotto e'
-   ancorata al blu di brand (talea-400 = #1272B7) con tinte piu' chiare
-   per il testo su pannelli scuri. Definendola in @theme, Tailwind genera
-   text-/bg-/border-/accent-talea-NNN E i modificatori di opacita'
-   (es. border-talea-400/30).
-
-   NB: prima la UI era ciano (#22d3ee, era molto bella). Per tornarci basta
-   rimettere i valori cyan commentati a fianco di ogni shade.
-   ---------------------------------------------------------------------- */
 @theme {
   --color-talea-blue: #1272b7; /* blu di brand */
   --color-talea-green: #21a84a; /* verde */
   --color-talea-green-dark: #004d19; /* verde scuro */
   --color-talea-yellow: #ffe604; /* giallo */
 
-  --color-talea-100: #d6e9f7; /* era cyan-100 #cffafe */
-  --color-talea-200: #a9cfee; /* era cyan-200 #a5f3fc */
-  --color-talea-300: #5ba4dc; /* era cyan-300 #67e8f9 — testo link su scuro */
-  --color-talea-400: #1272b7; /* era cyan-400 #22d3ee — accento primario */
+  /* Scala `talea-*` RITINTA per il tema chiaro. Prima (tema scuro) erano tinte
+     azzurre chiare da mettere su pannelli neri; ora i livelli 100/200/300 sono
+     verdi scuri leggibili su card BIANCHE, mentre il 400 resta il BLU accento
+     di brand (titoli/link/bordi), come nei siti Talea. */
+  --color-talea-100: #04210f; /* testo forte (quasi nero-verde) */
+  --color-talea-200: #1f3d2a; /* testo / valore */
+  --color-talea-300: #2d5a3d; /* testo secondario / link */
+  --color-talea-400: #1272b7; /* accento primario BLU */
 
-  /* Sfondo dei pannelli/chrome: verde-quasi-nero, una "sfumatura" scura del
-     verde scuro di brand (#004D19) invece del grigio neutro. Usato con i
-     modificatori di opacita' sopra la mappa (es. bg-talea-panel/85). */
-  --color-talea-panel: #0b1812; /* pannelli (era gray-900/950) */
-  --color-talea-panel-2: #14241b; /* input / superfici secondarie (era gray-800) */
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Card/pannelli sopra la mappa: BIANCO. Usato con i modificatori d'opacita'
+     (es. bg-talea-panel/85) + backdrop-blur -> vetro bianco satinato, come la
+     legenda Talea (#fffffff5). */
+  --color-talea-panel: #ffffff;
+  --color-talea-panel-2: #eef3ee; /* superfici secondarie / input */
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  /* Font di brand Talea: Calibre Semibold (licenza Talea, .woff2 in
-     public/fonts, caricato via next/font/local). Hanken Grotesk resta come
-     fallback vicino se il font non carica. */
-  font-family: var(--font-calibre), var(--font-hanken), Arial, Helvetica, sans-serif;
+  font-family: var(--font-inter), var(--font-calibre), var(--font-hanken), Arial,
+    Helvetica, sans-serif;
+}
+
+/* Scrollbar tenue stile Talea. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 
 /* I popup MapLibre (stazioni aria, tooltip rumore) vivono dentro il

@@ -1,13 +1,46 @@
-# ENVI-met — come aggiungere o modificare i dati
+# ENVI-met — aggiungere o modificare i dati (file `.tif`)
 
-Guida pratica per: aggiungere una nuova variabile, renderla "curata" (slider +
-click), cambiare le quote mostrate, i colori, le etichette, oppure sostituire la
-simulazione con un'altra (altro giorno, oppure UTCI/PET).
+Guida pratica e completa per **aggiungere un dato ENVI-met** (file `.tif`) e per:
+renderlo "curato" (slider + click), cambiare le quote mostrate, i colori, le
+etichette, oppure sostituire la simulazione con un'altra (altro giorno, o UTCI/PET).
 
 > Per **capire cosa contengono** i dati vedi
 > [`11_envimet-data-reference.md`](./11_envimet-data-reference.md).
 
 Tutto passa da **un solo script**: `scripts/build_envimet_overlays.py`.
+
+---
+
+## Avvio rapido (3 passi)
+
+Se ti serve solo **aggiungere un dato** e vederlo nel viewer, in breve:
+
+1. **Copia il GeoTIFF** in `web/public/data/Envimet_data/` con nome
+   `NN_nome_variabile_all_z.tif`:
+   - `NN` = numero a due cifre (es. `38`) — serve solo per l'ordine;
+   - `nome_variabile` = nome interno (es. `pet`, `utci`) → diventa la "chiave";
+   - deve finire con **`_all_z.tif`** (è così che lo script lo riconosce).
+
+   Requisiti (altrimenti il file viene saltato): stessa griglia del dominio
+   **253 × 273 celle**, bande = livelli di quota z (di norma 54). La
+   georeferenziazione è **automatica** (presa da `04_Velocita_Vento.tif`, già
+   presente): i `.tif` ENVI-met non hanno CRS, ci pensa lo script.
+2. **Genera** PNG + meta: `python scripts/build_envimet_overlays.py`. Riavvia il
+   viewer (`cd web && npm run dev`): il dato compare nel pannello **Microclima**.
+   Di default finisce tra i **"Dati tecnici"**; per renderlo "curato" (nome
+   semplice, slider quote, valore al click) vedi §2.
+3. **Pubblica online**: build con basePath + copia in `docs/` + `git push` — vedi §9.
+
+| Passo | Azione |
+|---|---|
+| 1 | Trascina `NN_nome_all_z.tif` in `web/public/data/Envimet_data/` |
+| 2 | `python scripts/build_envimet_overlays.py` |
+| 3 | build + copia in `docs/` + `git push` (§9) |
+
+> ⚠️ I `.tif` grezzi **non** vengono caricati su Git (cartella in `.gitignore`,
+> ~380 MB): nel sito finiscono solo i **PNG leggeri** + JSON generati dallo script.
+
+Le sezioni seguenti spiegano ogni passo in dettaglio.
 
 ---
 
@@ -214,3 +247,27 @@ Formato: `{ "w", "h", "v": [...], "z": { "<banda>": [...], ... } }`. Il viewer
 (`lib/envimet.ts`, `buildEnvimetSampler`) sceglie la griglia in base allo slider e
 ricade su `v` se la quota non è disponibile. Costo: i `.values.json` curati passano
 da ~0,4 MB a ~3,5 MB l'uno (caricati **lazy**, uno alla volta solo quando serve).
+
+---
+
+## 9. Pubblicare online
+
+Dopo aver rigenerato i dati (§5), per aggiornare il sito pubblico (GitHub Pages,
+servito da `docs/`):
+
+```bash
+cd web
+NEXT_PUBLIC_BASE_PATH=/UrbanScope3D npm run build   # genera web/out
+# copia il contenuto di web/out in ../docs (incluso .nojekyll)
+```
+
+poi dalla cartella principale:
+
+```bash
+git add -A && git commit -m "Aggiorna dati ENVI-met" && git push
+```
+
+Il sito si aggiorna a https://dclfbk.github.io/UrbanScope3D/
+
+> Si committano solo i **PNG/JSON** in `processed/`, **non** i `.tif` grezzi
+> (sono in `.gitignore`, ~380 MB). Escludi i grezzi anche da `docs/`.

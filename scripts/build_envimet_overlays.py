@@ -458,11 +458,17 @@ def main():
     # piano dell'overlay alla quota giusta (z deck = metri assoluti, come il
     # base_elev degli edifici). Mediana del base_elev degli edifici nel dominio.
     ground_elev = compute_ground_elev(bounds)
+    # PIANO del suolo (elev = a + b*lon + c*lat): il dominio ha una pendenza reale
+    # N-S (~13 m). Il viewer lo usa per INCLINARE il foglio microclima cosi' segue
+    # il suolo: a 1.5 m sta ~1.5 m sul suolo LOCALE invece di galleggiare sulla
+    # mediana (col foglio piatto, al bordo poteva sbagliare di ~10 m).
+    ground_plane = compute_ground_plane(bounds)
 
     meta = {
         "source": "ENVI-met PILOT-01-TALEA 2024-07-27 11:00 (z_band=%d)" % Z_BAND,
         "georef_from": GEOREF_TIF.name,
         "ground_elev": ground_elev,
+        "ground_plane": ground_plane,
         "overlays": overlays,
     }
     (OUT_DIR / "overlays.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -502,6 +508,38 @@ def compute_ground_elev(bounds, default=57.0):
         return default
     els.sort()
     return round(float(els[len(els) // 2]), 1)
+
+
+def compute_ground_plane(bounds):
+    """Fit ai minimi quadrati di un piano `elev = a + b*lon + c*lat` sui base_elev
+    degli edifici dentro il dominio ENVI-met. Il viewer lo valuta ai 4 angoli del
+    foglio microclima (e al punto cliccato) per inclinarlo sulla pendenza reale
+    del suolo. Ritorna {"a","b","c"} o None (-> il viewer ripiega sul piano
+    orizzontale a `ground_elev`)."""
+    if not BUILDINGS.exists():
+        return None
+    try:
+        gj = json.loads(BUILDINGS.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    w, e = bounds["west"], bounds["east"]
+    s, n = bounds["south"], bounds["north"]
+    lon, lat, el = [], [], []
+    for f in gj.get("features", []):
+        be = (f.get("properties") or {}).get("base_elev")
+        if not isinstance(be, (int, float)):
+            continue
+        try:
+            x, y = f["geometry"]["coordinates"][0][0][:2]
+        except Exception:
+            continue
+        if w <= x <= e and s <= y <= n:
+            lon.append(x); lat.append(y); el.append(be)
+    if len(el) < 30:  # troppo pochi punti: meglio il piano orizzontale
+        return None
+    A = np.c_[np.ones(len(el)), lon, lat]
+    coef, *_ = np.linalg.lstsq(A, np.asarray(el, dtype=float), rcond=None)
+    return {"a": round(float(coef[0]), 3), "b": round(float(coef[1]), 3), "c": round(float(coef[2]), 3)}
 
 
 def nearest_valid(band, mask, row, col, max_r=6):

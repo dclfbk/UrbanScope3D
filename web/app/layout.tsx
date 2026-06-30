@@ -1,8 +1,16 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Hanken_Grotesk } from "next/font/google";
+import { Geist, Geist_Mono, Hanken_Grotesk, Inter } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
 import Script from "next/script";
+
+// Inter: font dell'interfaccia dei siti ufficiali Talea (sci / historysuhi).
+// E' il font primario di tutta la UI (vedi globals.css --font-sans/--font-mono).
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800"],
+});
 
 // Font di brand Talea: Calibre Semibold (Klim), licenza Talea. Il .woff2 sta in
 // web/public/fonts ed e' committato nel repo. E' l'unico peso fornito: lo usiamo
@@ -43,7 +51,7 @@ export default function RootLayout({
   return (
     <html
       lang="it"
-      className={`${calibre.variable} ${hankenGrotesk.variable} ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${inter.variable} ${calibre.variable} ${hankenGrotesk.variable} ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <head>
         <link
