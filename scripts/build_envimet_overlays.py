@@ -454,6 +454,43 @@ def main():
             temp_mask = mask
             temp_range = (vmin, vmax)
 
+    # 1-bis) VETTORI VENTO GREZZI PER QUOTA (wind_uv.values.json): input del
+    # "microclima vivo" client-side (scie di particelle, vedi web/lib/microlive.ts).
+    # Finche' questo file non esiste il viewer DECODIFICA la direzione dal PNG
+    # wind_direction (inversione LUT viridis, solo ~1.5 m) e prende il modulo da
+    # wind_speed.values.json: funziona, ma la direzione resta quella pedonale a
+    # tutte le quote. Con i tif di nuovo disponibili, rieseguire lo script
+    # produce i vettori esatti per ognuna delle quote dello slider.
+    # NB: convenzione VERIFICATA sui dati: u = componente verso EST (m/s),
+    # v = verso NORD; il viewer li proietta sugli assi del dominio ruotato.
+    fu_paths = sorted(ENVIMET_DIR.glob("*flow_u_all_z.tif"))
+    fv_paths = sorted(ENVIMET_DIR.glob("*flow_v_all_z.tif"))
+    if fu_paths and fv_paths:
+        with rasterio.open(fu_paths[0]) as du, rasterio.open(fv_paths[0]) as dv:
+            if (du.width, du.height) == (W, H) and (dv.width, dv.height) == (W, H):
+                uv_bands = {}
+                for idx in HEIGHT_BANDS:
+                    if idx >= du.count or idx >= dv.count:
+                        continue
+                    bu, mu = load_band(du, idx)
+                    bv, mv = load_band(dv, idx)
+                    mflat = (mu | mv).ravel()
+                    ur, vr = bu.ravel(), bv.ravel()
+                    uv_bands[str(idx)] = {
+                        "u": [None if mflat[i] else round(float(ur[i]), 2) for i in range(ur.size)],
+                        "v": [None if mflat[i] else round(float(vr[i]), 2) for i in range(vr.size)],
+                    }
+                (OUT_DIR / "wind_uv.values.json").write_text(
+                    json.dumps({"w": W, "h": H, "bands": uv_bands}, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                print(f"[ok] vettori vento u/v per {len(uv_bands)} quote -> wind_uv.values.json")
+            else:
+                print("[warn] flow_u/flow_v: griglia diversa dal riferimento -> wind_uv non generato")
+    else:
+        print("[warn] tif flow_u/flow_v assenti: wind_uv.values.json non generato "
+              "(il viewer decodifica la direzione dal PNG, fallback ok)")
+
     # Quota del SUOLO sotto il dominio (m s.l.m.): serve al viewer per alzare il
     # piano dell'overlay alla quota giusta (z deck = metri assoluti, come il
     # base_elev degli edifici). Mediana del base_elev degli edifici nel dominio.

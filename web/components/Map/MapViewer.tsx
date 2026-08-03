@@ -13,6 +13,7 @@ import {
 } from '@deck.gl/core'
 import {
   GeoJsonLayer,
+  LineLayer,
   ScatterplotLayer,
   TextLayer,
 } from '@deck.gl/layers'
@@ -21,6 +22,16 @@ import { Geometry } from '@luma.gl/engine'
 import { getSunPosition, toMapLibreLight } from '@/lib/sun'
 import { computeSky, nightFactor } from '@/lib/sky'
 import { buildEnvimetSampler, type EnvimetSampler } from '@/lib/envimet'
+import {
+  DomainFrame,
+  Embers,
+  EMBER_HEAT,
+  EMBER_MIST,
+  WindField,
+  WindTrails,
+  decodePngGrid,
+  gridFromValues,
+} from '@/lib/microlive'
 import { t, type Lang, type StringKey } from '@/lib/i18n'
 import TimeSlider from '@/components/UI/TimeSlider'
 import InfoPanel from '@/components/UI/InfoPanel'
@@ -1158,6 +1169,65 @@ function buildQuartiereLabelsLayer(
 }
 
 // Rampa giallo -> rosso (YlOrRd) per la temperatura, normalizzata su [min,max].
+// --- Layer deck del "microclima vivo" -----------------------------------------
+// Impacchetta i buffer binari dei sistemi di particelle (lib/microlive.ts) in
+// layer deck.gl. Chiamata a OGNI frame dal loop rAF: i TypedArray sottostanti
+// sono mutati in place, il nuovo oggetto `data` forza il re-upload (~100 KB).
+function buildLiveLayers(sys: {
+  trails: WindTrails
+  heat: Embers
+  mist: Embers
+}): Layer[] {
+  const out: Layer[] = []
+  const t = sys.trails
+  out.push(
+    new LineLayer({
+      id: 'live-wind-trails',
+      data: {
+        length: t.segments,
+        attributes: {
+          getSourcePosition: { value: t.src, size: 3 },
+          getTargetPosition: { value: t.dst, size: 3 },
+          getColor: { value: t.col, size: 4, normalized: true },
+        },
+      },
+      getWidth: 1.8,
+      widthUnits: 'pixels',
+      pickable: false,
+      // Gli edifici occludono le scie (niente raggi-X): depth test normale.
+      parameters: { depthCompare: 'less-equal' },
+    }),
+  )
+  const clouds: [string, Embers][] = [
+    ['live-heat-embers', sys.heat],
+    ['live-humidity-mist', sys.mist],
+  ]
+  for (const [id, e] of clouds) {
+    if (!e.active || e.count === 0) continue
+    out.push(
+      new ScatterplotLayer({
+        id,
+        data: {
+          length: e.count,
+          attributes: {
+            getPosition: { value: e.posBuf, size: 3 },
+            getFillColor: { value: e.colBuf, size: 4, normalized: true },
+            getRadius: { value: e.radBuf, size: 1 },
+          },
+        },
+        radiusUnits: 'meters',
+        radiusMinPixels: 1.5,
+        billboard: true, // dischi rivolti alla camera: visibili anche in obliquo
+        stroked: false,
+        filled: true,
+        pickable: false,
+        parameters: { depthCompare: 'less-equal' },
+      }),
+    )
+  }
+  return out
+}
+
 // Stessa rampa usata nella pipeline ENVI-met (build_envimet_overlays.py) e
 // nella legenda, cosi' edifici e overlay parlano la stessa lingua cromatica.
 const YLORRD: [number, number, number][] = [
@@ -2245,6 +2315,185 @@ export default function MapViewer({
   // i dati microclima sono una FOTOGRAFIA di quell'istante, lo dichiariamo in
   // legenda. null finche' il meta non e' caricato.
   const [envSource, setEnvSource] = useState<string | null>(null)
+  // ---- "MICROCLIMA VIVO": animazione multi-dato, tutta CLIENT-SIDE ---------
+  // (motore in lib/microlive.ts). Un toggle dedicato nella categoria Microclima
+  // accende TRE sistemi di particelle SOVRAPPOSTI all'overlay di base scelto:
+  //   ~ scie di vento avvette dal campo ENVI-met (stile windy.com), alla quota
+  //     dello slider (modulo per quota dai valori grezzi; direzione decodificata
+  //     nel BROWSER dal PNG viridis, o da wind_uv.values.json se presente);
+  //   🔥 "fiammelle" che salgono dove la temperatura percepita (MRT) e' alta;
+  //   ○ foschia lenta dove l'umidita' relativa e' alta.
+  // Cosi' piu' dati si LEGGONO INSIEME e in movimento, e il lavoro (decodifica
+  // raster, colori, animazione) sta nel client, non nella pipeline Python.
+  const [liveOn, setLiveOn] = useState(false)
+  // Scatta quando i dati del vivo sono caricati/decodificati (avvia il loop).
+  const [liveReady, setLiveReady] = useState(0)
+  type LiveValuesJson = {
+    w: number
+    h: number
+    v: (number | null)[]
+    z?: Record<string, (number | null)[]>
+  }
+  type LiveUvJson = {
+    w: number
+    h: number
+    bands: Record<string, { u: (number | null)[]; v: (number | null)[] }>
+  }
+  const liveSysRef = useRef<{
+    frame: DomainFrame
+    wind: WindField
+    trails: WindTrails
+    heat: Embers
+    mist: Embers
+    // JSON dei valori di wind_speed: serve a ricampionare il modulo quando lo
+    // slider quota cambia banda (setSpeedGrid).
+    speedJson: LiveValuesJson
+    // Vettori u/v grezzi per quota (se la pipeline li ha esportati), altrimenti
+    // null -> si resta su direzione-da-PNG + modulo per quota.
+    uvJson: LiveUvJson | null
+  } | null>(null)
+  // Layer deck del vivo, ricostruiti a ogni frame dal loop rAF.
+  const liveLayersRef = useRef<Layer[]>([])
+  // Ultimo array di layer STATICI costruito dall'effect principale: il loop
+  // rAF lo riusa cosi' com'e' (stesse istanze -> diff deck quasi gratis).
+  const staticLayersRef = useRef<Layer[]>([])
+
+  // Carica e prepara (una volta) i dati del "vivo": griglie valori + direzione
+  // vento decodificata dal PNG. Tutto client-side, ~4 MB di JSON gia' in cache
+  // se l'utente ha cliccato sugli overlay.
+  useEffect(() => {
+    if (!liveOn || liveSysRef.current) return
+    const ovs = envimetOverlays
+    if (!ovs || ovs.length === 0) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const byKey = (k: string) => ovs.find((o) => o.key === k)
+        const speedOv = byKey('wind_speed')
+        const mrtOv = byKey('mean_radiant_temp')
+        const humOv = byKey('humidity')
+        const dirOv = byKey('wind_direction')
+        if (!speedOv?.values || !mrtOv?.values || !humOv?.values) return
+        const fetchJson = (u: string) =>
+          fetch(withBase(u)).then((r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`)
+            return r.json()
+          })
+        const [speedJson, mrtJson, humJson] = (await Promise.all([
+          fetchJson(speedOv.values),
+          fetchJson(mrtOv.values),
+          fetchJson(humOv.values),
+        ])) as [LiveValuesJson, LiveValuesJson, LiveValuesJson]
+        // Vettori esatti se disponibili (export opzionale della pipeline)...
+        let uvJson: LiveUvJson | null = null
+        try {
+          uvJson = await fetchJson('/data/processed/envimet/wind_uv.values.json')
+        } catch {
+          uvJson = null
+        }
+        const frame = new DomainFrame(speedOv.coordinates)
+        const speedGrid = gridFromValues(speedJson, envHeightBand)
+        let wind: WindField
+        const uvBand = uvJson?.bands?.[String(envHeightBand)] ?? null
+        if (uvJson && uvBand) {
+          wind = WindField.fromUV(
+            { w: uvJson.w, h: uvJson.h, v: Float32Array.from(uvBand.u, (x) => (x == null ? NaN : x)) },
+            { w: uvJson.w, h: uvJson.h, v: Float32Array.from(uvBand.v, (x) => (x == null ? NaN : x)) },
+          )
+        } else if (dirOv) {
+          // ...altrimenti DECODIFICA CLIENT-SIDE del PNG direzione (LUT viridis).
+          const dirGrid = await decodePngGrid(
+            withBase(dirOv.image),
+            'viridis',
+            dirOv.range.min,
+            dirOv.range.max,
+          )
+          wind = WindField.fromDirSpeed(dirGrid, speedGrid)
+        } else {
+          return
+        }
+        if (cancelled) return
+        const gp = envGroundPlane
+        const ground = (lon: number, lat: number) =>
+          gp ? gp.a + gp.b * lon + gp.c * lat : envGroundElev
+        const trails = new WindTrails(frame, wind, ground)
+        // Fiamme sempre dalla banda pedonale: e' li' che il caldo "si sente".
+        const heat = new Embers(frame, gridFromValues(mrtJson), ground, wind, {
+          ...EMBER_HEAT,
+          count: 650,
+        })
+        const mist = new Embers(frame, gridFromValues(humJson), ground, wind, {
+          ...EMBER_MIST,
+          count: 230,
+        })
+        liveSysRef.current = { frame, wind, trails, heat, mist, speedJson, uvJson }
+        setLiveReady((x) => x + 1)
+      } catch (e) {
+        console.warn('[microclima vivo] dati non disponibili:', e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // envHeightBand volutamente fuori: la quota e' gestita dall'effect sotto.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveOn, envimetOverlays, envGroundPlane, envGroundElev])
+
+  // Slider quota: aggiorna modulo (e u/v esatti se presenti) del campo vento e
+  // la quota a cui volano le scie, senza ricreare i sistemi.
+  useEffect(() => {
+    const sys = liveSysRef.current
+    if (!sys) return
+    const uvBand = sys.uvJson?.bands?.[String(envHeightBand)] ?? null
+    if (sys.uvJson && uvBand) {
+      sys.wind.setUV(
+        { w: sys.uvJson.w, h: sys.uvJson.h, v: Float32Array.from(uvBand.u, (x) => (x == null ? NaN : x)) },
+        { w: sys.uvJson.w, h: sys.uvJson.h, v: Float32Array.from(uvBand.v, (x) => (x == null ? NaN : x)) },
+      )
+    } else {
+      sys.wind.setSpeedGrid(gridFromValues(sys.speedJson, envHeightBand))
+    }
+    const speedOv = (envimetOverlays ?? []).find((o) => o.key === 'wind_speed')
+    const zm = speedOv?.heights?.find((h) => h.band === envHeightBand)?.z_m
+    sys.trails.zM = zm ?? 1.5
+  }, [envHeightBand, liveReady, envimetOverlays])
+
+  // Loop di animazione (~30 fps): avanza i sistemi, ricostruisce i layer del
+  // vivo e li compone con gli ULTIMI layer statici. In pagina nascosta rAF si
+  // ferma da solo; spegnendo il toggle si rimuovono i layer e il loop muore.
+  useEffect(() => {
+    const sys = liveSysRef.current
+    const overlay = overlayRef.current
+    if (!liveOn || !sys || !overlay) {
+      if (!liveOn && overlayRef.current && liveLayersRef.current.length > 0) {
+        liveLayersRef.current = []
+        overlayRef.current.setProps({ layers: [...staticLayersRef.current] })
+        mapRef.current?.triggerRepaint()
+      }
+      return
+    }
+    let raf = 0
+    let last = performance.now()
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick)
+      const dtMs = now - last
+      if (dtMs < 33) return // cap ~30 fps: basta e avanza, risparmia batteria
+      last = now
+      const dt = Math.min(0.1, dtMs / 1000)
+      sys.trails.step(dt)
+      sys.heat.step(dt, now / 1000)
+      sys.mist.step(dt, now / 1000)
+      liveLayersRef.current = buildLiveLayers(sys)
+      if (overlayReadyRef.current && overlayRef.current) {
+        overlayRef.current.setProps({
+          layers: [...staticLayersRef.current, ...liveLayersRef.current],
+        })
+        mapRef.current?.triggerRepaint()
+      }
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [liveOn, liveReady])
   const [basemap, setBasemap] = useState<BasemapId>('dark')
   // Pannello basemap: ora e' un menu APRIBILE accanto alla barra di ricerca
   // (prima era un pannello fisso in basso a destra). Chiuso di default.
@@ -3455,12 +3704,9 @@ export default function MapViewer({
               far: BUILDINGS_FADE_FAR_M,
             }
           : null
-        overlay.setProps({
-          // Stessa istanza persistente: deck fa deepEqual e non la sostituisce
-          // (le mutazioni sopra sono gia' attive); se invece il deck e' stato
-          // ricreato — es. cambio basemap — la re-installa con i valori giusti.
-          effects: lightingRef.current ? [lightingRef.current] : [],
-          layers: [
+        // Layer STATICI (tutto tranne il "microclima vivo"): salvati in ref
+        // cosi' il loop rAF dell'animazione li ricompone senza ricostruirli.
+        const staticLayers = [
             buildShadowBuildingsLayer(
               // Mostro gli edifici estrusi se e' attivo il 3D OPPURE la
               // colorazione per temperatura (cosi' 'buildings-temp' funziona
@@ -3570,7 +3816,16 @@ export default function MapViewer({
               : null,
             buildQuartiereFlashLayer(quartieri, flashQuartiere, flashFading),
             buildQuartiereLabelsLayer(quartieri),
-          ].filter(Boolean) as Layer[],
+          ].filter(Boolean) as Layer[]
+        staticLayersRef.current = staticLayers
+        overlay.setProps({
+          // Stessa istanza persistente: deck fa deepEqual e non la sostituisce
+          // (le mutazioni sopra sono gia' attive); se invece il deck e' stato
+          // ricreato — es. cambio basemap — la re-installa con i valori giusti.
+          effects: lightingRef.current ? [lightingRef.current] : [],
+          // I layer del "microclima vivo" (se accesi) vanno RIAPPESI anche qui,
+          // altrimenti questo setProps li farebbe sparire fino al frame dopo.
+          layers: [...staticLayers, ...liveLayersRef.current],
         })
         // Cambiare lo shadowColor (alpha 0/0.5) aggiorna un uniform ma non
         // ridisegna da solo: forzo un repaint cosi' l'on/off delle ombre si
@@ -4421,6 +4676,53 @@ export default function MapViewer({
                         <span className="text-[#7a9a87] text-[11px] font-mono">
                           {lang === 'it' ? 'nessun dato' : 'no data'}
                         </span>
+                      )}
+                      {/* MICROCLIMA VIVO: i dati si muovono e si vedono INSIEME
+                          (scie di vento + fiamme di caldo + foschia di umidita',
+                          sopra l'overlay di base scelto). Motore client-side:
+                          vedi lib/microlive.ts. */}
+                      {ovs.length > 0 && (
+                        <>
+                          <label className="flex items-center gap-2 text-sm cursor-pointer hover:text-talea-300 text-talea-200 font-medium">
+                            <input
+                              type="checkbox"
+                              checked={liveOn}
+                              onChange={(e) => {
+                                setLiveOn(e.target.checked)
+                                if (e.target.checked) {
+                                  // Base di default: temperatura, se non c'e'
+                                  // gia' un dato acceso su cui animare.
+                                  if (!ovs.some((o) => envVisible[o.key]))
+                                    selectEnv('temperature', true)
+                                  else flyToEnvDomain()
+                                }
+                              }}
+                              className="accent-talea-400 cursor-pointer"
+                            />
+                            <span>
+                              ✨{' '}
+                              {lang === 'it'
+                                ? 'Microclima vivo (animato)'
+                                : 'Living microclimate (animated)'}
+                            </span>
+                          </label>
+                          {liveOn && (
+                            <div className="pl-6 -mt-0.5 text-[10px] leading-4 text-[#7a9a87] font-mono">
+                              <span className="text-sky-300">〜</span>{' '}
+                              {lang === 'it' ? 'scie = vento' : 'trails = wind'}
+                              {' · '}
+                              <span className="text-orange-400">●</span>{' '}
+                              {lang === 'it'
+                                ? 'fiamme = caldo percepito'
+                                : 'flames = perceived heat'}
+                              {' · '}
+                              <span className="text-sky-200">○</span>{' '}
+                              {lang === 'it'
+                                ? 'foschia = umidità'
+                                : 'mist = humidity'}
+                            </div>
+                          )}
+                        </>
                       )}
                       {curatedOvs.map((o) => ovRow(o))}
                       {/* "Temperatura degli edifici": colora gli edifici per
