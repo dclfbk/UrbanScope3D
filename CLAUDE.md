@@ -31,10 +31,13 @@ npm run lint                   # eslint
 NEXT_PUBLIC_BASE_PATH=/UrbanScope3D npm run build   # build di produzione -> web/out/
 ```
 
-Pubblicare = copiare il contenuto di `web/out/` in `docs/` (compreso
-`.nojekyll`, senza il quale Pages scarta `_next/`) e committare su `main`.
-Il workflow `.github/workflows/pages.yml` è solo un CI check, NON fa deploy.
-URL pubblico: https://dclfbk.github.io/UrbanScope3D/
+Pubblicare = copiare il contenuto di `web/out/` in `docs/` (robocopy /MIR,
+compreso `.nojekyll` senza il quale Pages scarta `_next/`) e committare su
+`main`. **REGOLA: ogni push che tocca app o dati DEVE includere il rebuild di
+`docs/` nello stesso commit** — GitHub Pages serve SOLO `docs/` (inclusa
+`docs/data/`), quindi un push senza rebuild lascia il sito online vecchio o
+rotto. Il workflow `.github/workflows/pages.yml` è solo un CI check, NON fa
+deploy. URL pubblico: https://dclfbk.github.io/UrbanScope3D/
 
 ## Trappole note
 
