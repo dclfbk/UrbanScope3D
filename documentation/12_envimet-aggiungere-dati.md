@@ -1,273 +1,129 @@
 # ENVI-met — aggiungere o modificare i dati (file `.tif`)
 
-Guida pratica e completa per **aggiungere un dato ENVI-met** (file `.tif`) e per:
-renderlo "curato" (slider + click), cambiare le quote mostrate, i colori, le
-etichette, oppure sostituire la simulazione con un'altra (altro giorno, o UTCI/PET).
+Guida pratica per **aggiungere un dato ENVI-met** (file `.tif`) al viewer, per
+renderlo "curato" (slider + click), cambiarne colori/etichette, pubblicarlo
+online, oppure sostituire la simulazione con un'altra (altro giorno, o UTCI/PET).
 
 > Per **capire cosa contengono** i dati vedi
 > [`11_envimet-data-reference.md`](./11_envimet-data-reference.md).
 
-Tutto passa da **un solo script**: `scripts/build_envimet_overlays.py`.
+> **Aggiornato (agosto 2026): non c'è più nessuna pipeline da rigenerare.**
+> I GeoTIFF vengono scaricati e decodificati direttamente **nel browser**
+> (`web/lib/envimetTif.ts` + Web Worker con geotiff.js). Il "catalogo" delle
+> variabili è un file TypeScript committato: **`web/lib/envimetRegistry.ts`**
+> (l'ex `overlays.json`). Tutto quello che prima si faceva rilanciando
+> `scripts/build_envimet_overlays.py` ora si fa modificando quel file.
+> Lo script Python e i suoi output PNG/JSON restano nel repo come materiale
+> storico/di tesi, ma il sito non li legge più.
 
 ---
 
 ## Avvio rapido (3 passi)
 
-Se ti serve solo **aggiungere un dato** e vederlo nel viewer, in breve:
-
 1. **Copia il GeoTIFF** in `web/public/data/Envimet_data/` con nome
-   `NN_nome_variabile_all_z.tif`:
-   - `NN` = numero a due cifre (es. `38`) — serve solo per l'ordine;
-   - `nome_variabile` = nome interno (es. `pet`, `utci`) → diventa la "chiave";
-   - deve finire con **`_all_z.tif`** (è così che lo script lo riconosce).
-
-   Requisiti (altrimenti il file viene saltato): stessa griglia del dominio
-   **253 × 273 celle**, bande = livelli di quota z (di norma 54). La
-   georeferenziazione è **automatica** (presa da `04_Velocita_Vento.tif`, già
-   presente): i `.tif` ENVI-met non hanno CRS, ci pensa lo script.
-2. **Genera** PNG + meta: `python scripts/build_envimet_overlays.py`. Riavvia il
-   viewer (`cd web && npm run dev`): il dato compare nel pannello **Microclima**.
-   Di default finisce tra i **"Dati tecnici"**; per renderlo "curato" (nome
-   semplice, slider quote, valore al click) vedi §2.
-3. **Pubblica online**: build con basePath + copia in `docs/` + `git push` — vedi §9.
-
-| Passo | Azione |
-|---|---|
-| 1 | Trascina `NN_nome_all_z.tif` in `web/public/data/Envimet_data/` |
-| 2 | `python scripts/build_envimet_overlays.py` |
-| 3 | build + copia in `docs/` + `git push` (§9) |
-
-> ⚠️ I `.tif` grezzi **non** vengono caricati su Git (cartella in `.gitignore`,
-> ~380 MB): nel sito finiscono solo i **PNG leggeri** + JSON generati dallo script.
-
-Le sezioni seguenti spiegano ogni passo in dettaglio.
+   `NN_nome_variabile_all_z.tif`. Requisiti: stessa griglia del dominio
+   **253 × 273 celle**, bande = livelli di quota z (di norma 54, con tag GDAL
+   `z_m` per banda), nodata −9999, export south-up (come tutti gli altri: il
+   worker fa il flip). Il CRS **non serve**: la georeferenziazione del dominio
+   è costante in `web/lib/envimetGeo.ts`.
+2. **Aggiungi la voce** in `ENV_VARS` dentro `web/lib/envimetRegistry.ts`
+   (vedi §1). Riavvia il dev server: il dato compare nel pannello Microclima
+   (tra i "Dati tecnici" se `curated: false`).
+3. **Pubblica online** (se serve): `shipped: true` nel registry + whitelist in
+   `.gitignore` + rebuild di `docs/` (vedi §5).
 
 ---
 
-## 0. Come funziona la pipeline (in breve)
+## 1. Aggiungere una variabile al registry
 
-```
-web/public/data/Envimet_data/NN_nome_all_z.tif   (input: GeoTIFF 54 bande)
-            │
-            ▼   python scripts/build_envimet_overlays.py
-            │
-web/public/data/processed/envimet/
-    ├── <key>.png                (overlay a terra di ogni variabile)
-    ├── <key>__zN.png            (un PNG per quota, solo curati con slider)
-    ├── <key>.values.json        (griglia valori per il click, solo curati)
-    └── overlays.json            (meta unico: bounds, range, legenda, quote…)
-web/public/data/processed/buildings_heights.geojson
-    └── + air_temp e mrt_col iniettati in ogni edificio
-```
+Ogni variabile è una voce di `ENV_VARS` (`web/lib/envimetRegistry.ts`),
+tipo `EnvimetVarDef`:
 
-I `.tif` ENVI-met **non hanno CRS**: lo script prende georeferenziazione e
-rotazione da `web/public/data/04_Velocita_Vento.tif` (stessa griglia 253×273) e li
-applica ai multibanda. Le bande vengono **capovolte** (`np.flipud`) perché
-ENVI-met esporta "south-up".
-
-**Dipendenze:** `rasterio`, `numpy`, `Pillow`. Lancio:
-
-```bash
-python scripts/build_envimet_overlays.py
-```
-
----
-
-## 1. Aggiungere una nuova variabile "extra" (automatico)
-
-Le variabili **extra** (a terra, senza slider/click) sono prese **in automatico**:
-basta mettere il nuovo file `NN_nome_all_z.tif` in `web/public/data/Envimet_data/`
-e rilanciare lo script. La funzione `build_extra_variables()` raccoglie tutti i
-`*_all_z.tif` non già curati.
-
-Per dargli un nome italiano leggibile, aggiungi una voce in **`IT_LABELS`**
-(altrimenti usa il `long_name` inglese del tif):
-
-```python
-IT_LABELS = {
-    ...
-    "nome_key": "Etichetta in italiano",
+```ts
+{
+  key: 'pet',                                  // nome interno univoco
+  file: '38_pet_all_z.tif',                    // in web/public/data/Envimet_data/
+  label: { it: 'Comfort termico (PET)', en: 'Thermal comfort (PET)' },
+  desc: { it: '…', en: '…' },                  // divulgativa, solo curati
+  unit: '°C',
+  ramp: 'ylorrd',        // ylorrd | blues | greens | magma | viridis | rdbu
+  range: [18, 41],       // FISSO [vmin, vmax]; null = percentili 2-98 sul cubo
+  agg: 'band',           // 'band' = quota per quota (slider); 'maxz' = max colonna
+  curated: true,         // true = dato "per cittadini"; false = tecnico
+  shipped: false,        // true = tif pubblicato online (vedi §5)
 }
 ```
 
-La `key` è il nome del file senza il prefisso numerico e senza `_all_z`
-(es. `32_co2_all_z.tif` → `co2`).
+Note:
+- **`range` fisso** = "stesso colore = stesso valore" fra quote e simulazioni:
+  consigliato per i curati. Con `null` la scala si adatta al cubo.
+- **`agg: 'maxz'`** serve ai dati concentrati in alto (vegetazione LAD: a
+  1.5 m sarebbe ~0), mostra il massimo lungo la colonna, senza slider.
+- Le **rampe colore** sono in `ENV_RAMPS` nello stesso file (identiche alla
+  vecchia pipeline Python, così i colori restano quelli dei PNG storici).
 
----
+Con la voce nel registry il resto è automatico: toggle, legenda, foglio 3D,
+valore al click, profilo verticale. Nessun passo di build dei dati.
 
-## 2. Promuovere una variabile a "curata" (slider quote + valore al click)
+## 2. Variabili tecniche nel viewer
 
-I 7 dati curati sono nella lista **`CURATED`**. Aggiungi una riga:
+Il pannello mostra di default solo i dati **curati**. Le variabili con
+`curated: false` compaiono solo con `SHOW_TECHNICAL_ENVIMET = true` in
+`web/components/Map/MapViewer.tsx` (menu a scomparsa "Dati tecnici").
 
-```python
-CURATED = [
-    ...
-    # (key, file, label IT, unità, rampa colore, aggregazione)
-    ("nuova_key", "NN_nome_all_z.tif", "Etichetta IT", "°C", "ylorrd", "band"),
-]
-```
+## 3. Quote / slider
 
-Campi:
-- **key**: nome interno (usato nei PNG e in `overlays.json`).
-- **file**: nome del `.tif`.
-- **label / unità**: testo mostrato in legenda.
-- **rampa**: una di `ylorrd` (caldo), `blues` (acqua/umidità), `greens`
-  (vegetazione), `magma` (radiazione), `viridis` (generica), `rdbu` (divergente
-  +/−). Definite in `RAMPS`.
-- **aggregazione**:
-  - `"band"` → usa la banda pedonale + genera i PNG dello slider quote;
-  - `"maxz"` → massimo lungo la colonna (utile per la vegetazione).
+Non c'è più nulla da configurare: lo slider copre **tutte le 54 quote** del
+cubo (0.3 → 148.5 m, snap alla banda reale più vicina, lette dai tag `z_m`;
+fallback `ENV_Z_LEVELS` in `envimetGeo.ts`).
 
-Poi (consigliato) fissa il **range colore** in **`FIXED_RANGES`** così la scala è
-stabile e confrontabile (senza, ricade sul percentile 2–98 del singolo overlay):
-
-```python
-FIXED_RANGES = {
-    ...
-    "nuova_key": (vmin, vmax),
-}
-```
-
-Solo i curati con `agg="band"` ottengono lo slider quote e la griglia valori per
-il click.
-
----
-
-## 3. Cambiare le quote mostrate dallo slider
-
-Modifica **`HEIGHT_BANDS`** (indici di banda, 0-based):
-
-```python
-# attuale (scelta guidata dai dati): 1.5, 4.5, 7.5, 10.5, 13.5, 16.5, 25.5, 40.5, 58.5 m
-# (58.5 m = banda 23, "sopra ogni edificio": il piu' alto nel dominio e' 50.1 m)
-HEIGHT_BANDS = [2, 5, 6, 7, 8, 9, 12, 17, 23]
-```
-
-⚠️ Sono **indici di banda**, non metri. La griglia esiste solo a passo di 3 m sopra
-i 4.5 m → vedi la tabella di mappatura indice↔metri in
-[`11_envimet-data-reference.md`](./11_envimet-data-reference.md#come-cambiare-le-quote).
-Più quote = più PNG (poche decine, costo basso). Dopo la modifica **rigenera**.
-
-Lo slider nel viewer è **proporzionale ai metri reali** e aggancia la quota più
-vicina: aggiungere/togliere quote non richiede modifiche al viewer, solo a
-`HEIGHT_BANDS` + rigenerazione.
-
-> Nota: `Z_BAND = 2` è la quota di **default** (pedonale ~1.5 m) usata per l'overlay
-> a terra e per il campionamento di `air_temp` sugli edifici.
-
----
-
-## 4. Cambiare colori, etichette, descrizioni
-
-- **Range colore**: `FIXED_RANGES` nello script (vedi §2).
-- **Rampe colore**: `RAMPS` nello script (e la copia `YLORRD` in `MapViewer.tsx`
-  per gli edifici, da tenere allineata).
-- **Etichette IT**: `IT_LABELS` nello script (vedi §1).
-- **Descrizioni "per cittadini"** mostrate in legenda: `ENV_DESC` in
-  `web/components/Map/MapViewer.tsx`.
-
----
-
-## 5. Rigenerare e verificare
+## 4. Verificare in locale
 
 ```bash
-python scripts/build_envimet_overlays.py
+cd web && npm run dev     # aprire http://localhost:3000 (o http://127.0.0.1:3000)
 ```
 
-Lo script stampa una riga per overlay (`[ok] key: ...`). Controlla:
-- nuovi PNG in `web/public/data/processed/envimet/`;
-- la voce in `overlays.json` (range, `heights`, legenda);
-- in dev (`cd web && npm run dev`) che il layer compaia nel menu e lo slider
-  funzioni.
+Attiva il layer nel pannello Microclima: parte il download del tif (barra di
+avanzamento sulla voce), poi foglio + click + profilo. Errore sul toggle =
+file mancante o griglia sbagliata (guarda la console).
 
----
+## 5. Pubblicare online
+
+I `.tif` sorgente sono **gitignorati** (`/web/public/data/Envimet_data/`,
+~372 MB). Online (GitHub Pages, servito da `docs/`) vanno **solo i tif
+`shipped: true`** (~119 MB per i 12 attuali). Per pubblicarne uno nuovo:
+
+1. `shipped: true` nella voce del registry;
+2. aggiungi la riga di **whitelist** in `.gitignore` (root):
+   `!/docs/data/Envimet_data/NN_nome_all_z.tif`;
+3. rebuild + deploy:
+
+```bash
+cd web
+NEXT_PUBLIC_BASE_PATH=/UrbanScope3D npm run build   # genera web/out (copia TUTTO public/, tif inclusi)
+# copia il contenuto di web/out in ../docs (robocopy /MIR) e ripristina docs/.nojekyll
+```
+
+poi dalla cartella principale `git add -A && git commit && git push`.
+Il sito si aggiorna su https://dclfbk.github.io/UrbanScope3D/
+
+> Una variabile `shipped: false` resta usabile in locale (se il file c'è);
+> online il suo toggle mostra un errore ma non rompe nulla.
 
 ## 6. Sostituire la simulazione (altro giorno) o aggiungere UTCI/PET
 
 ### Altro giorno / altro orario
 Sostituisci i `.tif` in `web/public/data/Envimet_data/` con quelli della nuova
-simulazione (stessa griglia 253×273) e aggiorna la data in `main()`:
-
-```python
-meta = {
-    "source": "ENVI-met PILOT-01-TALEA 2024-07-27 11:00 (z_band=%d)" % Z_BAND,
-    ...
-}
-```
-
-La legenda del viewer legge la data **da qui** (`meta.source`) e la formatta da
-sola (`formatEnvDate` in `MapViewer.tsx`): aggiornando questa stringa si aggiorna
-la legenda. Se la griglia cambia (dimensioni/rotazione), va rifatto anche il file
-di georeferenziazione `04_Velocita_Vento.tif`.
+simulazione (stessa griglia 253×273) e aggiorna la costante **`ENV_SOURCE`** in
+`web/lib/envimetGeo.ts` (la legenda formatta la data da lì, `formatEnvDate` in
+`MapViewer.tsx`). Se cambia la griglia (dimensioni/rotazione) vanno rigenerati
+anche `ENV_CORNERS`/`ENV_GROUND_PLANE` in `envimetGeo.ts` — la ricetta è nel
+commento in cima a quel file.
 
 ### Aggiungere UTCI / PET (comfort termico "feels-like")
-Sarebbe il dato ideale per il messaggio comfort (numeri più "umani" della MRT, con
-soglie ufficiali di stress da caldo), **ma non è nell'export attuale**: va generato
-con il modulo **BIO-met** di ENVI-met (richiesta lato Leonardo). Una volta ottenuto
-il `.tif`, si aggiunge come variabile **curata** (§2) e, volendo, si fa colorare
-gli edifici con esso al posto della MRT in `MapViewer.tsx` (funzione
-`pedestrianMrt` / `mrt_col`).
-
----
-
-## 7. Mostrare di nuovo i "Dati tecnici" nel viewer
-
-Di default il viewer mostra **solo gli 8 dati curati** (temperatura aria, percepita,
-umidità, sole diretto/diffuso/riflesso, vegetazione, **velocità del vento**): il
-sito è per i cittadini, non per i tecnici. Le ~30 variabili ENVI-met grezze
-(`flow_u`, `tke`, `pressure_perturbation`, …) **vengono comunque generate** dallo
-script (overlay PNG + voce in `overlays.json`), ma **non sono elencate** nel
-pannello Microclima.
-
-Per **riattivarle**, in `web/components/Map/MapViewer.tsx` metti:
-
-```ts
-const SHOW_TECHNICAL_ENVIMET = true   // era false
-```
-
-Ricompaiono in fondo al gruppo **Microclima**, in un menu a scomparsa
-"Dati tecnici". Nessun'altra modifica serve: la lista è dinamica da
-`overlays.json` (tutto ciò che ha `curated: false`).
-
-> La **velocità del vento** è stata **promossa a dato curato** (slider quota +
-> valore al click): vedi la riga `wind_speed` in `CURATED`. C'è anche un layer
-> "Vento" separato (frecce/flusso) nella categoria *Ambiente*, alimentato da
-> `wind_overlay.json` (pipeline diversa), che resta un dato a livello singolo.
-
----
-
-## 8. Valore al click per ogni QUOTA (slider altezza)
-
-Per i curati con `agg="band"` lo script ora scrive in `<key>.values.json` non solo
-la banda pedonale (`v`) ma anche un blocco `z` con la **griglia di valori per ogni
-quota** dello slider (`HEIGHT_BANDS`). Così, alzando lo slider, il popup del punto
-cliccato mostra il valore **di quella quota**, non più sempre quello a ~1,5 m.
-
-Formato: `{ "w", "h", "v": [...], "z": { "<banda>": [...], ... } }`. Il viewer
-(`lib/envimet.ts`, `buildEnvimetSampler`) sceglie la griglia in base allo slider e
-ricade su `v` se la quota non è disponibile. Costo: i `.values.json` curati passano
-da ~0,4 MB a ~3,5 MB l'uno (caricati **lazy**, uno alla volta solo quando serve).
-
----
-
-## 9. Pubblicare online
-
-Dopo aver rigenerato i dati (§5), per aggiornare il sito pubblico (GitHub Pages,
-servito da `docs/`):
-
-```bash
-cd web
-NEXT_PUBLIC_BASE_PATH=/UrbanScope3D npm run build   # genera web/out
-# copia il contenuto di web/out in ../docs (incluso .nojekyll)
-```
-
-poi dalla cartella principale:
-
-```bash
-git add -A && git commit -m "Aggiorna dati ENVI-met" && git push
-```
-
-Il sito si aggiorna a https://dclfbk.github.io/UrbanScope3D/
-
-> Si committano solo i **PNG/JSON** in `processed/`, **non** i `.tif` grezzi
-> (sono in `.gitignore`, ~380 MB). Escludi i grezzi anche da `docs/`.
+Sarebbe il dato ideale per il messaggio comfort (numeri più "umani" della MRT,
+con soglie ufficiali di stress da caldo), **ma non è nell'export attuale**: va
+generato con il modulo **BIO-met** di ENVI-met (richiesta lato Leonardo). Una
+volta ottenuto il `.tif`, si aggiunge come variabile **curata** (§1) e,
+volendo, si fa colorare gli edifici con esso al posto della MRT in
+`MapViewer.tsx`.

@@ -12,6 +12,9 @@ const nextConfig: NextConfig = {
   assetPrefix: basePath || undefined,
   trailingSlash: true,
   images: { unoptimized: true },
+  // Solo dev: permette di aprire il dev server anche come http://127.0.0.1:3000
+  // (alcuni browser/estensioni non risolvono localhost verso il server).
+  allowedDevOrigins: ['127.0.0.1'],
 }
 
 export default nextConfig

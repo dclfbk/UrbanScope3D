@@ -27,9 +27,11 @@
 /web/public/data/DatiLeonardo_8-05-2026/
 /web/public/data/wetransfer_dsm_bologna_2026-05-08_1237.zip
 
-# Raster Envimet grezzi (~380 MB, 37 GeoTIFF multibanda) condivisi da
-# Leonardo. Input per la futura visualizzazione microclima; non versionati
-# finche' manca l'ancoraggio geografico (vedi 9_viewer-expansion.md).
+# Raster Envimet grezzi (~372 MB, 38 GeoTIFF multibanda) condivisi da
+# Leonardo. Da agosto 2026 il sito li decodifica NEL BROWSER (lib/envimetTif):
+# i sorgenti restano fuori da git (si recuperano dal drive del prof), online
+# vanno solo i 12 marcati `shipped: true` nel registry, committati in docs/
+# (vedi whitelist sotto).
 /web/public/data/Envimet_data/
 
 # Stessi grezzi, ma finiscono anche nel build statico docs/ (Next copia TUTTO
@@ -44,10 +46,33 @@
 /docs/data/4)LandUse-GroundSurface/4.4_Uso_Suolo_Dettaglio_2020_RDN32/
 /docs/data/DatiLeonardo_8-05-2026/
 /docs/data/wetransfer_dsm_bologna_2026-05-08_1237.zip
-/docs/data/Envimet_data/
+# Envimet in docs/: ignora tutto TRANNE i 12 tif `shipped: true` del registry
+# (web/lib/envimetRegistry.ts) che il sito pubblicato scarica a runtime.
+/docs/data/Envimet_data/*
+!/docs/data/Envimet_data/00_objects_all_z.tif
+!/docs/data/Envimet_data/01_flow_u_all_z.tif
+!/docs/data/Envimet_data/02_flow_v_all_z.tif
+!/docs/data/Envimet_data/03_flow_w_all_z.tif
+!/docs/data/Envimet_data/04_wind_speed_all_z.tif
+!/docs/data/Envimet_data/08_potential_air_temperature_all_z.tif
+!/docs/data/Envimet_data/12_relative_humidity_all_z.tif
+!/docs/data/Envimet_data/17_vegetation_lad_all_z.tif
+!/docs/data/Envimet_data/18_direct_sw_radiation_all_z.tif
+!/docs/data/Envimet_data/19_diffuse_sw_radiation_all_z.tif
+!/docs/data/Envimet_data/20_reflected_sw_radiation_all_z.tif
+!/docs/data/Envimet_data/26_mean_radiant_temp_all_z.tif
+
+# wind_uv.values.json: derivato storico del microclima vivo (ora il vento
+# viene dai cubi tif client-side). Resta su disco come materiale di tesi ma
+# non va versionato ne' pubblicato.
+/web/public/data/processed/envimet/wind_uv.values.json
+/docs/data/processed/envimet/wind_uv.values.json
 
 # Claude Code locale
 .claude/
+
+# Riferimenti visivi personali per il 3D (video + appunti), non per il repo
+/materialePer3D/
 
 # Python
 __pycache__/

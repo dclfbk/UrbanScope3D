@@ -19,9 +19,20 @@ come sono fatte le **quote (altezze z)** e quali di esse mostriamo nella mappa.
 - **Quote verticali (z):** **54 livelli** (vedi §3).
 
 I file originali stanno in `web/public/data/Envimet_data/` (un GeoTIFF multibanda
-per variabile, `NN_nome_all_z.tif`, 54 bande = 54 quote). Lo script
-`scripts/build_envimet_overlays.py` li trasforma in PNG + `overlays.json` per il
-viewer.
+per variabile, `NN_nome_all_z.tif`, 54 bande = 54 quote).
+
+> **Aggiornato (agosto 2026): i GeoTIFF sono LA sorgente dati del viewer.**
+> Il browser li scarica e li decodifica in un Web Worker
+> (`web/lib/envimetTif.ts` + `web/workers/envimetTif.worker.ts`, parser
+> geotiff.js) in "cubi" Float32 253×273×54 tenuti in cache LRU: foglio,
+> valore al click, profilo verticale e particelle leggono slice dal cubo a
+> costo zero. La vecchia pipeline `scripts/build_envimet_overlays.py`
+> (PNG + `overlays.json` precotti) non serve più al sito; i suoi output
+> restano nel repo come materiale di tesi. Il catalogo delle variabili
+> (rampe colore, range, unità, file) è `web/lib/envimetRegistry.ts`;
+> la georeferenziazione del dominio è costante in `web/lib/envimetGeo.ts`.
+> Online (GitHub Pages) vengono pubblicati solo i 12 tif marcati
+> `shipped: true` nel registry (~119 MB).
 
 ---
 
@@ -30,12 +41,13 @@ viewer.
 Tutte le variabili hanno **54 quote** (sono dati 3D). La colonna **"Nel viewer"**
 dice come le mostriamo:
 
-- **Curato + slider** = uno dei 7 dati "per cittadini": PNG a più quote (slider
-  altezza) + valore al click sulla mappa.
-- **Curato (max-z)** = curato ma mostrato come massimo lungo la colonna (vedi nota
-  vegetazione), senza slider.
-- **Extra (a terra)** = selezionabile e colorato, ma un solo livello (pedonale) e
-  niente valore al click.
+- **Curato + slider** = uno dei dati "per cittadini" nel pannello: foglio
+  colorato a **qualsiasi delle 54 quote** (slider altezza) + valore al click e
+  profilo verticale completo (col cubo in memoria ogni quota è gratis).
+- **Curato (max-z)** = curato ma mostrato come massimo lungo la colonna (vedi
+  nota vegetazione), senza slider.
+- **Extra** = variabile "tecnica" nel registry (`curated: false`): il codice sa
+  caricarla, ma online è disponibile solo se marcata `shipped: true`.
 
 | # | Variabile (file) | Unità | Nel viewer | Cosa misura (in parole semplici) |
 |---|---|---|---|---|
@@ -108,17 +120,17 @@ La griglia è **fitta vicino al suolo** e **regolare in alto**. Le 54 quote real
 Quindi **sopra i 4.5 m esistono solo quote a passo di 3 m** (4.5, 7.5, 10.5, …):
 qualsiasi altezza "tonda" che scegli viene agganciata al livello reale più vicino.
 
-### Perché non le usiamo tutte
+### Tutte le 54 quote sono esplorabili
 
-Due motivi:
+> **Aggiornato (agosto 2026).** Con la decodifica client-side dei GeoTIFF il
+> vincolo storico è caduto: prima ogni combinazione (variabile × quota) era un
+> PNG precotto separato, quindi si esponeva solo un sottoinsieme di quote
+> (`HEIGHT_BANDS`); ora il cubo completo è in memoria e **lo slider copre
+> tutte le 54 quote** (0.3 → 148.5 m), con snap alla banda reale più vicina.
 
-1. **Costo file.** Ogni combinazione **(variabile × quota)** diventa **un PNG
-   separato** (più, per i curati, una griglia di valori per il click). Esporre
-   tutte e 54 le quote per i curati significherebbe **centinaia di PNG**
-   (≈ 6 variabili × 54 ≈ 320 file), con repo gonfio e caricamento più lento.
-2. **I dati lassù sono uniformi.** La variazione spaziale interessante
-   (sole/ombra, effetto di alberi ed edifici) è **concentrata vicino al suolo** e
-   sparisce in alto. Misurando lo spread spaziale (p5–p95) della MRT per quota:
+Resta vero che **i dati in alto sono uniformi**: la variazione spaziale
+interessante (sole/ombra, effetto di alberi ed edifici) è concentrata vicino
+al suolo. Misurando lo spread spaziale (p5–p95) della MRT per quota:
 
    | Quota | Spread MRT |
    |---|---|
@@ -131,17 +143,9 @@ Due motivi:
 
    Tutta "l'azione" è **da terra fino a ~16 m** (strada + facciate fino ai tetti).
 
-### Quote esposte (scelta guidata dai dati)
-
-`HEIGHT_BANDS = [2, 5, 6, 7, 8, 9, 12, 17, 23]` →
-**1.5, 4.5, 7.5, 10.5, 13.5, 16.5, 25.5, 40.5, 58.5 m**.
-
-Cioè: **fitte ogni 3 m da 1.5 a 16.5 m** (dove il dato è ricco), poi **rade**
-(25.5, 40.5) per mostrare che in alto è uniforme, e un'ultima a **58.5 m**
-"sopra ogni edificio" (il più alto nel dominio è 50.1 m — vedi sotto).
-
 > Edifici nel dominio ENVI-met (1090): mediana 13.4 m, 99° percentile 34.7 m,
-> **massimo 50.1 m**; solo 3 superano i 40.5 m. Il piano a 52.5 m li copre tutti.
+> **massimo 50.1 m**; solo 3 superano i 40.5 m — sopra i ~52 m il foglio sta
+> "sopra ogni edificio".
 
 ### Come viene disegnato l'overlay (foglio sollevato alla quota)
 
@@ -149,20 +153,22 @@ Cioè: **fitte ogni 3 m da 1.5 a 16.5 m** (dove il dato è ricco), poi **rade**
 > MapLibre **drappeggiata sul terreno**; si è scelto invece di farlo **salire**
 > con la quota, su richiesta dell'utente.
 
-L'overlay è un **`BitmapLayer` deck.gl** posato a `ENV_GROUND_ELEV (56.9 m, =
-`ground_elev` in `overlays.json`) + quota della banda`: lo slider altezza lo
+L'overlay è un **`BitmapLayer` deck.gl** posato a `ENV_GROUND_ELEV` (56.9 m,
+costante in `web/lib/envimetGeo.ts`) + quota della banda: lo slider altezza lo
 **solleva fisicamente** in 3D. L'esagerazione del terreno è 1, quindi i metri
-deck combaciano col terreno.
+deck combaciano col terreno. L'immagine del foglio viene colorata al volo
+dalla slice del cubo (`web/lib/envimetColor.ts`, LUT 256 della rampa).
 
 Dentro il dominio il terreno ha una **pendenza reale N–S** (~13 m: bordo nord
 ~48 m, bordo sud ~61 m s.l.m.; range totale ~26 m). Un foglio **orizzontale** alla
 sola quota mediana, alle bande basse (1,5 / 4,5 m), al bordo sbaglierebbe di ~10 m
 (galleggia a nord, va sottoterra a sud → "1,5 m" sembra sbagliato).
 
-**Aggiornato (fine giugno 2026): il foglio ora è INCLINATO.** `build_envimet_overlays.py`
-fa un fit ai minimi quadrati di un **piano del suolo** `elev = a + b·lon + c·lat`
-sui `base_elev` degli edifici nel dominio e lo salva in `overlays.json`
-(`ground_plane`). Il viewer assegna a ciascuno dei **4 angoli** del `BitmapLayer`
+**Aggiornato (fine giugno 2026): il foglio ora è INCLINATO.** Un fit ai minimi
+quadrati di un **piano del suolo** `elev = a + b·lon + c·lat` sui `base_elev`
+degli edifici nel dominio (storicamente calcolato da `build_envimet_overlays.py`,
+oggi costante `ENV_GROUND_PLANE` in `web/lib/envimetGeo.ts`). Il viewer assegna
+a ciascuno dei **4 angoli** del `BitmapLayer`
 la quota `suolo_locale(angolo) + z_banda`, così il foglio **segue la pendenza**:
 a 1,5 m sta ~1,5 m sul suolo ovunque (residuo del fit ~2 m, vs ~10 m del foglio
 piatto). Il pallino del punto cliccato usa lo stesso piano.
@@ -179,7 +185,7 @@ dall'alto** in automatico (`flyToEnvDomain`). (Codice: `env-bitmap` /
 `env-probe-dot` nei layer deck di `MapViewer.tsx`.)
 
 Le celle **senza dato (NoData)** non sono trasparenti ma riempite di un **verde
-salvia tenue** (`colorize` in `build_envimet_overlays.py`), così il dominio non
+salvia tenue** (`NODATA_RGB` in `web/lib/envimetColor.ts`), così il dominio non
 lascia buchi sulla mappa.
 
 ### Slider proporzionale
@@ -189,15 +195,10 @@ cursore riflette l'altezza vera, quindi le quote fitte vicino al suolo restano
 vicine fra loro e quelle alte distanti. Allo spostamento aggancia (snap) la quota
 disponibile più vicina. (Codice: `MapViewer.tsx`, blocco "Slider ALTEZZA".)
 
-### Come cambiare le quote
+### Le quote nel codice
 
-Modifica `HEIGHT_BANDS` con gli **indici di banda** (0-based) — non metri: la
-griglia esiste solo a passo di 3 m sopra i 4.5 m, quindi ogni quota si aggancia
-al livello reale più vicino. Mappatura indice→metri:
-
-| Indice | 0 | 2 | 5 | 6 | 7 | 8 | 9 | 12 | 15 | 17 | 18 | 21 | 22 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Metri | 0.3 | 1.5 | 4.5 | 7.5 | 10.5 | 13.5 | 16.5 | 25.5 | 34.5 | 40.5 | 43.5 | 52.5 | 55.5 |
-
-Dopo la modifica va **rigenerata** la pipeline — istruzioni in
+Le 54 quote reali (m sopra il suolo) vengono dai tag GDAL `z_m` delle bande,
+letti alla decodifica; `ENV_Z_LEVELS` in `web/lib/envimetGeo.ts` è il fallback
+committato. Non c'è più nulla da rigenerare per cambiare le quote esposte: lo
+slider le copre tutte. Per aggiungere/pubblicare variabili vedi
 [`12_envimet-aggiungere-dati.md`](./12_envimet-aggiungere-dati.md).

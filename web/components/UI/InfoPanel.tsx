@@ -1,8 +1,22 @@
 'use client'
 
 import { t, type Lang } from '@/lib/i18n'
+import { rampColorAt, type RampKey } from '@/lib/envimetRegistry'
 
 type EnvSample = { key: string; label: string; unit: string; value: number | null }
+
+// Profilo VERTICALE della variabile attiva al punto cliccato: tutte le quote
+// del cubo ENVI-met (54 bande), lette dal GeoTIFF decodificato nel browser.
+type EnvProfile = {
+  label: string
+  unit: string
+  ramp: RampKey
+  vmin: number
+  vmax: number
+  points: { zM: number; v: number | null }[]
+  /** Indice banda dello slider quota: la riga evidenziata. */
+  currentBand: number
+}
 
 type Props = {
   lat: number
@@ -11,6 +25,7 @@ type Props = {
   // Quota (m sul suolo) a cui si riferiscono i valori microclima, se il dato
   // attivo ha lo slider altezza. null = livello pedonale / dato senza quote.
   heightM?: number | null
+  profile?: EnvProfile | null
   lang: Lang
   onClose: () => void
 }
@@ -25,6 +40,7 @@ export default function InfoPanel({
   lon,
   envSamples,
   heightM,
+  profile,
   lang,
   onClose,
 }: Props) {
@@ -68,6 +84,62 @@ export default function InfoPanel({
                 </span>
               </div>
             ))}
+          </div>
+        </>
+      )}
+
+      {/* PROFILO VERTICALE: il valore della variabile attiva a TUTTE le quote
+          del cubo ENVI-met in questo punto (barre orizzontali colorate con la
+          stessa rampa dell'overlay; la quota dello slider e' evidenziata).
+          Reso possibile dal cubo GeoTIFF completo in memoria nel browser. */}
+      {profile && (
+        <>
+          <div className="text-talea-400 text-xs font-mono uppercase tracking-widest mt-3 mb-1">
+            {lang === 'it' ? 'Profilo in quota' : 'Vertical profile'}
+          </div>
+          <div className="text-[#5a7a67] text-[10px] font-mono mb-1">
+            {profile.label} ({profile.unit})
+          </div>
+          <div className="flex flex-col-reverse gap-px" aria-hidden>
+            {profile.points.map((p, i) => {
+              const span = Math.max(1e-9, profile.vmax - profile.vmin)
+              const tNorm =
+                p.v == null
+                  ? null
+                  : Math.max(0, Math.min(1, (p.v - profile.vmin) / span))
+              const [r, g, b] =
+                tNorm == null ? [90, 122, 103] : rampColorAt(profile.ramp, tNorm)
+              const isCur = i === profile.currentBand
+              // Barre sottili: 54 quote in ~120 px. Larghezza = valore
+              // normalizzato; NoData = trattino corto grigio.
+              return (
+                <div key={i} className="flex items-center gap-1">
+                  <div
+                    className="h-[2px] rounded-sm"
+                    style={{
+                      width: `${tNorm == null ? 4 : 8 + tNorm * 82}%`,
+                      background: `rgb(${r},${g},${b})`,
+                      outline: isCur ? '1px solid #fff' : undefined,
+                    }}
+                  />
+                  {isCur && (
+                    <span className="text-talea-100 text-[9px] font-mono leading-none whitespace-nowrap">
+                      {Math.round(p.zM * 10) / 10} m
+                      {p.v != null ? ` · ${Math.round(p.v * 10) / 10}` : ''}
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <div className="flex justify-between text-[#5a7a67] text-[9px] font-mono mt-0.5">
+            <span>{lang === 'it' ? 'suolo' : 'ground'}</span>
+            <span>
+              {Math.round(
+                (profile.points[profile.points.length - 1]?.zM ?? 0) * 10,
+              ) / 10}{' '}
+              m
+            </span>
           </div>
         </>
       )}

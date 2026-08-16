@@ -13,6 +13,7 @@ import {
 } from '@deck.gl/core'
 import {
   GeoJsonLayer,
+  IconLayer,
   LineLayer,
   ScatterplotLayer,
   TextLayer,
@@ -21,17 +22,42 @@ import { SimpleMeshLayer } from '@deck.gl/mesh-layers'
 import { Geometry } from '@luma.gl/engine'
 import { getSunPosition, toMapLibreLight } from '@/lib/sun'
 import { computeSky, nightFactor } from '@/lib/sky'
-import { buildEnvimetSampler, type EnvimetSampler } from '@/lib/envimet'
 import {
-  DomainFrame,
   Embers,
   EMBER_HEAT,
   EMBER_MIST,
   WindField,
-  WindTrails,
-  decodePngGrid,
-  gridFromValues,
+  WIND_UNSCALE,
+  buildWindTexture,
+  makeSmokeSprite,
+  type DomainFrame,
+  type WindTexture,
 } from '@/lib/microlive'
+import {
+  ENV_BOUNDS,
+  ENV_CORNERS,
+  ENV_GROUND_PLANE,
+  ENV_SOURCE,
+  groundAt as envGroundAt,
+} from '@/lib/envimetGeo'
+import {
+  ENV_VARS,
+  rampCssGradient,
+  type EnvimetVarDef,
+} from '@/lib/envimetRegistry'
+import {
+  bandSlice,
+  cubeRange,
+  envFrame,
+  getCubeSync,
+  loadCube,
+  maxZSlice,
+  sliceGrid,
+  verticalProfile,
+  type EnvimetCube,
+} from '@/lib/envimetTif'
+import { colorizeSlice } from '@/lib/envimetColor'
+import { WindParticleLayer, type PaletteStop } from '@/lib/windgl'
 import { t, type Lang, type StringKey } from '@/lib/i18n'
 import TimeSlider from '@/components/UI/TimeSlider'
 import InfoPanel from '@/components/UI/InfoPanel'
@@ -49,9 +75,11 @@ import {
   type RGB,
 } from '@/lib/palette'
 
-// Gli overlay microclima ENVI-met (37+ variabili) NON sono piu' elencati qui:
-// sono caricati dinamicamente da overlays.json e gestiti in `envVisible`
-// (Record per `key`), non nel record `visibility` tipizzato sotto.
+// Gli overlay microclima ENVI-met (38 variabili) NON sono piu' elencati qui:
+// vengono dal registry statico lib/envimetRegistry (ENV_VARS) e sono gestiti
+// in `envVisible` (Record per `key`), non nel record `visibility` tipizzato.
+// I DATI si leggono dai GeoTIFF grezzi decodificati nel browser
+// (lib/envimetTif): niente piu' PNG/JSON precotti dalla pipeline Python.
 type LayerKey =
   | 'buildings-3d'
   | 'shadows'
@@ -66,34 +94,19 @@ type LayerKey =
 
 type CategoryKey = 'edifici' | 'verde' | 'ambiente' | 'microclima'
 
-// Un overlay ENVI-met: PNG georeferenziato su 4 angoli (dominio ruotato) +
-// range/legenda per la UI. Caricato da envimet/overlays.json.
-type EnvimetOverlay = {
-  key: string
-  label: string
-  unit: string
-  image: string
-  values: string
-  range: { min: number; max: number }
-  // Range EFFETTIVO dei dati (min/max osservati), piu' stretto del `range`
-  // fisso usato per il PNG: lo usiamo per colorare gli edifici cosi' la rampa
-  // si spalma sui valori reali e caldi/freddi si distinguono bene.
-  observed?: { min: number; max: number }
-  // true = uno dei 7 dati curati (con quote/slider + valori al click). Le altre
-  // variabili sono solo overlay a terra selezionabili.
-  curated?: boolean
-  // Quote (m) disponibili per lo slider "altezza": ogni voce ha il suo PNG
-  // (stessa scala colore). Vuoto/assente per overlay senza dimensione verticale
-  // (es. vegetazione max-z). Vedi HEIGHT_BANDS in build_envimet_overlays.py.
-  heights?: { band: number; z_m: number; image: string }[]
-  bounds: { west: number; south: number; east: number; north: number }
-  coordinates: [
-    [number, number],
-    [number, number],
-    [number, number],
-    [number, number],
-  ]
-  legend: { value: number; color: string }[]
+// Le variabili ENVI-met vengono dal registry statico (lib/envimetRegistry):
+// niente piu' overlays.json. Il range colore delle variabili tecniche (range
+// null nel registry) si raffina coi percentili del cubo una volta caricato.
+const ENV_OVERLAYS: EnvimetVarDef[] = ENV_VARS
+// Range colore da mostrare in legenda: fisso dal registry, altrimenti dai
+// percentili 2-98 del cubo caricato (fallback 0-1 finche' non c'e').
+function envRangeOf(o: EnvimetVarDef): { min: number; max: number } {
+  if (o.range) return { min: o.range[0], max: o.range[1] }
+  const cube = getCubeSync(o.key)
+  if (!cube) return { min: 0, max: 1 }
+  const [mn, mx] = cubeRange(cube)
+  const r = (x: number) => Math.round(x * 10) / 10
+  return { min: r(mn), max: r(mx) }
 }
 
 // Centralina qualita' aria (output di join_air_stations.py): punto + medie.
@@ -157,11 +170,8 @@ const LAYERS: {
   // resa da `envimetOverlays` + stato `envVisible`.)
 ]
 
-// URL del meta unico degli overlay ENVI-met.
-const ENVIMET_OVERLAYS_URL = withBase('/data/processed/envimet/overlays.json')
-
-// Data/ora della simulazione ENVI-met, estratta dal campo `source` del meta
-// (es. "ENVI-met PILOT-01-TALEA 2024-07-27 11:00 (z_band=2)") e formattata per
+// Data/ora della simulazione ENVI-met, estratta da ENV_SOURCE (costante del
+// registry, es. "ENVI-met PILOT-01-TALEA 2024-07-27 11:00") e formattata per
 // la legenda. I dati microclima sono una FOTOGRAFIA di quell'istante: non
 // variano col giorno reale, quindi lo dichiariamo esplicitamente.
 const ENV_MONTHS_IT = [
@@ -192,85 +202,9 @@ function formatEnvDate(source: string | null, lang: 'it' | 'en'): string | null 
 // Vedi documentation/12_envimet-aggiungere-dati.md §7.
 const SHOW_TECHNICAL_ENVIMET = false
 
-// Descrizioni INTUITIVE (per cittadini, non tecnici) di ogni dato microclima
-// ENVI-met. Mostrate nella legenda quando l'overlay e' attivo. Chiave = `key`
-// dell'overlay (vedi overlays.json).
-const ENV_DESC: Record<string, { it: string; en: string }> = {
-  temperature: {
-    it: 'Quanto è calda l’aria all’altezza delle persone. Il rosso segna le zone dove si sente più caldo.',
-    en: 'How hot the air is at human height. Red marks the spots where it feels hottest.',
-  },
-  mean_radiant_temp: {
-    it: 'Il caldo che senti davvero sulla pelle: somma sole diretto e calore di muri e asfalto. È l’indice più vicino al “quanto soffro il caldo”.',
-    en: 'The heat your body actually feels: direct sun plus heat radiating from walls and pavement. The closest thing to “how much the heat bothers me”.',
-  },
-  humidity: {
-    it: 'Quanta umidità c’è nell’aria. Valori alti = aria più afosa e pesante da respirare.',
-    en: 'How much moisture is in the air. High values = muggier, heavier air.',
-  },
-  direct_sw: {
-    it: 'Quanto sole diretto colpisce il suolo. Le zone più chiare sono le più esposte, senza ombra.',
-    en: 'How much direct sunlight hits the ground. Brighter zones are the most exposed, with no shade.',
-  },
-  diffuse_sw: {
-    it: 'La luce del sole diffusa dal cielo, che arriva anche dove c’è ombra.',
-    en: 'Sunlight scattered by the sky, reaching even shaded areas.',
-  },
-  reflected_sw: {
-    it: 'Il sole rimbalzato da muri e pavimenti: aumenta il caldo percepito nelle strade strette.',
-    en: 'Sunlight bounced off walls and pavement: it adds to the perceived heat in narrow streets.',
-  },
-  vegetation_lad: {
-    it: 'Quanto è fitta la chioma degli alberi: più è alta, più ombra e frescura regala il verde.',
-    en: 'How dense the tree canopy is: the higher it is, the more shade and cooling the greenery gives.',
-  },
-  wind_speed: {
-    it: 'Quanto soffia il vento. In strada è più debole, salendo con lo slider cresce: il vento porta via il caldo e rinfresca.',
-    en: 'How strong the wind blows. It is weaker at street level and grows as you raise the slider: wind carries heat away and cools things down.',
-  },
-}
-
-// Etichette bilingui dei dati microclima CURATI (il `label` in overlays.json e'
-// solo in italiano). In inglese si usa la versione EN; per gli altri (tecnici)
-// si ricade sul label del JSON.
-const ENV_LABELS: Record<string, { it: string; en: string }> = {
-  temperature: { it: "Temperatura dell'aria", en: 'Air temperature' },
-  humidity: { it: "Umidità dell'aria", en: 'Air humidity' },
-  vegetation_lad: { it: 'Vegetazione (chioma)', en: 'Vegetation (canopy)' },
-  direct_sw: { it: 'Sole diretto', en: 'Direct sunlight' },
-  diffuse_sw: { it: 'Luce diffusa dal cielo', en: 'Diffuse sky light' },
-  reflected_sw: { it: 'Sole riflesso da muri e suolo', en: 'Sun reflected off walls & ground' },
-  mean_radiant_temp: { it: 'Temperatura percepita', en: 'Perceived temperature' },
-  // --- dati tecnici (mostrati nel sottogruppo "Dati tecnici") ---
-  objects: { it: 'Oggetti / edifici (maschera)', en: 'Objects / buildings (mask)' },
-  flow_u: { it: 'Vento componente U (E-O)', en: 'Wind component U (E–W)' },
-  flow_v: { it: 'Vento componente V (N-S)', en: 'Wind component V (N–S)' },
-  flow_w: { it: 'Vento componente W (verticale)', en: 'Wind component W (vertical)' },
-  wind_speed: { it: 'Velocità del vento', en: 'Wind speed' },
-  wind_speed_change: { it: 'Variazione velocità vento', en: 'Wind speed change' },
-  wind_direction: { it: 'Direzione del vento', en: 'Wind direction' },
-  pressure_perturbation: { it: 'Perturbazione di pressione', en: 'Pressure perturbation' },
-  air_temperature_delta: { it: 'Δ Temperatura aria', en: 'Air temperature Δ' },
-  air_temperature_change: { it: 'Variazione temperatura aria', en: 'Air temperature change' },
-  specific_humidity: { it: 'Umidità specifica', en: 'Specific humidity' },
-  tke: { it: 'Turbolenza (TKE)', en: 'Turbulence (TKE)' },
-  tke_dissipation: { it: 'Dissipazione turbolenza', en: 'Turbulence dissipation' },
-  vertical_exchange_coef_impuls: { it: 'Coeff. scambio verticale', en: 'Vertical exchange coef.' },
-  horizontal_exchange_coef_impuls: { it: 'Coeff. scambio orizzontale', en: 'Horizontal exchange coef.' },
-  local_mixing_length: { it: 'Lunghezza di mescolamento', en: 'Mixing length' },
-  tke_normalised_1d: { it: 'TKE normalizzata', en: 'TKE normalised' },
-  dissipation_normalised_1d: { it: 'Dissipazione normalizzata', en: 'Dissipation normalised' },
-  km_normalised_1d: { it: 'Km normalizzato', en: 'Km normalised' },
-  tke_mechanical_turbulence_prod: { it: 'Produzione turbolenza meccanica', en: 'Mechanical turbulence production' },
-  co2: { it: 'CO₂ (qualità aria)', en: 'CO₂ (air quality)' },
-  co2_2: { it: 'CO₂ (ppm)', en: 'CO₂ (ppm)' },
-  plant_co2_flux: { it: 'Flusso CO₂ vegetazione', en: 'Plant CO₂ flux' },
-  div_lw_radiation_temp_change: { it: 'Variazione T da radiazione IR', en: 'IR radiation temp. change' },
-  natural_convection_velocity: { it: 'Velocità convezione naturale', en: 'Natural convection velocity' },
-  building_number: { it: 'Numero edificio (maschera)', en: 'Building number (mask)' },
-}
-const envLabel = (o: { key: string; label: string }, lang: Lang): string =>
-  ENV_LABELS[o.key]?.[lang] ?? o.label
+// Etichetta bilingue e descrizione divulgativa vengono dal registry
+// (lib/envimetRegistry): un punto unico per label/desc/unita'/rampe.
+const envLabel = (o: EnvimetVarDef, lang: Lang): string => o.label[lang]
 
 const BUILDINGS_FOOTPRINT_URL = withBase('/data/1)Buildings/1.1_Edifici_Particellari.geojson')
 const BUILDINGS_HEIGHTS_URL = withBase('/data/processed/buildings_heights.geojson')
@@ -316,12 +250,10 @@ const TERRAIN_TILES_URL = withBase('/data/processed/terrain/{z}/{x}/{y}.png')
 const TERRAIN_MINZOOM = 11
 const TERRAIN_MAXZOOM = 14
 const TERRAIN_EXAGGERATION = 1
-// Quota base (m s.l.m.) del dominio ENVI-met = `ground_elev` in
-// public/data/processed/envimet/overlays.json. Le quote z_m delle bande sono
-// RELATIVE al suolo, quindi il foglio microclima va a ENV_GROUND_ELEV + z_m
-// per "salire" sopra il terreno (effetto foglio che sale). Esagerazione = 1,
-// quindi i metri deck combaciano col terreno MapLibre.
-const ENV_GROUND_ELEV = 56.9
+// (Quota base e piano del suolo del dominio ENVI-met: costanti in
+// lib/envimetGeo — le quote z_m delle bande sono RELATIVE al suolo, quindi il
+// foglio microclima va a suolo_locale + z_m. Esagerazione terreno = 1, quindi
+// i metri deck combaciano col terreno MapLibre.)
 const GREEN_URL = withBase('/data/green.geojson')
 const PRIVATE_GREEN_URL = withBase('/data/2)Vegetation/2.2_Verde_Privato_Urbanizzato.geojson')
 // URL pubblico (GitHub Pages) usato nella condivisione: in locale
@@ -1170,34 +1102,54 @@ function buildQuartiereLabelsLayer(
 
 // Rampa giallo -> rosso (YlOrRd) per la temperatura, normalizzata su [min,max].
 // --- Layer deck del "microclima vivo" -----------------------------------------
-// Impacchetta i buffer binari dei sistemi di particelle (lib/microlive.ts) in
-// layer deck.gl. Chiamata a OGNI frame dal loop rAF: i TypedArray sottostanti
-// sono mutati in place, il nuovo oggetto `data` forza il re-upload (~100 KB).
+// Scie di vento: motore GPU (lib/windgl, transform feedback derivato da
+// WeatherLayers GL) — le particelle sono avvette e colorate INTERAMENTE sulla
+// GPU dalla texture u/v ricampionata client-side (lib/microlive.buildWindTexture).
+// Fiamme/foschia: sistemi CPU (TypedArray mutati in place a ogni frame).
+
+// Rampa velocita' (m/s) -> colore scia: lenta = azzurro tenue, veloce = bianca.
+const WIND_PALETTE: PaletteStop[] = [
+  [0, [110, 175, 255, 120]],
+  [1.2, [160, 210, 255, 185]],
+  [2.4, [225, 240, 255, 230]],
+  [4, [255, 255, 255, 255]],
+]
+
+// Atlas dello sprite di fumo, creato pigramente al primo frame (solo client).
+// Data-URL e non canvas: e' il tipo che IconLayer accetta (e cache-a) senza
+// fare confusione con le Texture luma.
+let smokeAtlas: string | null = null
+const SMOKE_MAPPING = {
+  puff: { x: 0, y: 0, width: 128, height: 128, mask: true },
+}
+
 function buildLiveLayers(sys: {
-  trails: WindTrails
+  windTex: WindTexture
+  groundPlane: [number, number, number]
+  zM: number
   heat: Embers
   mist: Embers
 }): Layer[] {
   const out: Layer[] = []
-  const t = sys.trails
   out.push(
-    new LineLayer({
+    new WindParticleLayer({
       id: 'live-wind-trails',
-      data: {
-        length: t.segments,
-        attributes: {
-          getSourcePosition: { value: t.src, size: 3 },
-          getTargetPosition: { value: t.dst, size: 3 },
-          getColor: { value: t.col, size: 4, normalized: true },
-        },
-      },
-      getWidth: 1.8,
-      widthUnits: 'pixels',
+      image: sys.windTex.image,
+      imageUnscale: WIND_UNSCALE,
+      bounds: sys.windTex.bounds,
+      // Quota reale: piano del suolo ENVI-met + quota dello slider -> terreno
+      // ed edifici occludono le scie (patch 3D del layer vendorizzato).
+      groundPlane: sys.groundPlane,
+      altitude: sys.zM + 1,
+      palette: WIND_PALETTE,
+      numParticles: 4000,
+      maxAge: 30,
+      speedFactor: 30,
+      width: 2.5,
       pickable: false,
-      // Gli edifici occludono le scie (niente raggi-X): depth test normale.
-      parameters: { depthCompare: 'less-equal' },
     }),
   )
+  if (!smokeAtlas) smokeAtlas = makeSmokeSprite(128).toDataURL()
   const clouds: [string, Embers][] = [
     ['live-heat-embers', sys.heat],
     ['live-humidity-mist', sys.mist],
@@ -1205,23 +1157,29 @@ function buildLiveLayers(sys: {
   for (const [id, e] of clouds) {
     if (!e.active || e.count === 0) continue
     out.push(
-      new ScatterplotLayer({
+      new IconLayer({
         id,
         data: {
           length: e.count,
           attributes: {
             getPosition: { value: e.posBuf, size: 3 },
-            getFillColor: { value: e.colBuf, size: 4, normalized: true },
-            getRadius: { value: e.radBuf, size: 1 },
+            getColor: { value: e.colBuf, size: 4, normalized: true },
+            getSize: { value: e.sizeBuf, size: 1 },
+            getAngle: { value: e.angBuf, size: 1 },
           },
         },
-        radiusUnits: 'meters',
-        radiusMinPixels: 1.5,
-        billboard: true, // dischi rivolti alla camera: visibili anche in obliquo
-        stroked: false,
-        filled: true,
+        iconAtlas: smokeAtlas,
+        iconMapping: SMOKE_MAPPING,
+        getIcon: () => 'puff',
+        sizeUnits: 'meters',
+        // Niente minimo in pixel: da lontano gli sprite si fondono in foschia
+        // invece di diventare un tappeto di puntini a taglia fissa.
+        sizeMinPixels: 1,
+        billboard: true, // sprite rivolti alla camera: volumetrici in obliquo
         pickable: false,
-        parameters: { depthCompare: 'less-equal' },
+        // Edifici e terreno occludono il fumo (niente raggi-X), ma il fumo non
+        // scrive depth: gli sprite sovrapposti si fondono invece di "bucarsi".
+        parameters: { depthCompare: 'less-equal', depthWriteEnabled: false },
       }),
     )
   }
@@ -2228,12 +2186,22 @@ export default function MapViewer({
   const [pointEnv, setPointEnv] = useState<
     { key: string; label: string; unit: string; value: number | null }[]
   >([])
-  // Sampler ENVI-met per variabile (lazy: caricati quando l'overlay e'
-  // acceso). `requested` evita fetch doppi; `samplersReady` ri-triggera il
-  // calcolo dei valori quando un sampler finisce di caricare.
-  const envSamplersRef = useRef<Record<string, EnvimetSampler>>({})
-  const envRequestedRef = useRef<Set<string>>(new Set())
-  const [samplersReady, setSamplersReady] = useState(0)
+  // Profilo VERTICALE (54 quote) della variabile attiva al punto cliccato:
+  // reso in InfoPanel come colonnina colorata. Possibile solo ora che il cubo
+  // GeoTIFF completo sta in memoria nel browser.
+  const [pointProfile, setPointProfile] = useState<{
+    def: EnvimetVarDef
+    points: { zM: number; v: number | null }[]
+    vmin: number
+    vmax: number
+  } | null>(null)
+  // Cubi ENVI-met: `envCubeTick` scatta quando un cubo GeoTIFF finisce di
+  // decodificare (ritriggera memo/effect che leggono getCubeSync);
+  // `envLoading` guida l'indicatore di avanzamento accanto al toggle.
+  const [envCubeTick, setEnvCubeTick] = useState(0)
+  const [envLoading, setEnvLoading] = useState<
+    Record<string, { loaded: number; total: number } | 'error'>
+  >({})
   // Segnaposto "Google Maps" del punto cliccato sulla mappa.
   const probeMarkerRef = useRef<maplibregl.Marker | null>(null)
   // Stazioni qualita' aria (marker DOM, sempre sopra agli edifici 3D).
@@ -2249,15 +2217,6 @@ export default function MapViewer({
   const [buildingsUrl, setBuildingsUrl] = useState<string>(
     BUILDINGS_HEIGHTS_URL,
   )
-  // Id corrente del layer/sorgente env-overlay (univoco per quota): serve per
-  // rimuovere quello precedente quando cambia l'immagine (vedi effect overlay).
-  const envOverlayIdRef = useRef<string | null>(null)
-  // Overlay microclima ENVI-met: stato per la UI (legenda, toggle abilitati),
-  // ref per le callback registrate al mount (addCustomLayers).
-  const [envimetOverlays, setEnvimetOverlays] = useState<EnvimetOverlay[] | null>(
-    null,
-  )
-  const envimetRef = useRef<EnvimetOverlay[] | null>(null)
   // Visibilita' degli overlay microclima (dinamici, fino a 37+). Separata dal
   // record `visibility` tipizzato. UNO alla volta: accenderne uno azzera gli
   // altri. Chiave = `key` dell'overlay.
@@ -2266,18 +2225,17 @@ export default function MapViewer({
   // così quando si attiva un overlay microclima O gli "Edifici → temperatura"
   // la camera ci va sopra in diagonale: il "foglio" del dato alle varie quote si
   // legge in 3D (prima era una vista piatta dall'alto, richiesta utente). Tutti
-  // gli overlay condividono lo stesso dominio -> uso il primo per i bounds.
+  // gli overlay condividono lo stesso dominio -> bounds costanti (ENV_BOUNDS).
   const flyToEnvDomain = () => {
-    const ov = (envimetOverlays ?? [])[0]
-    const b = ov?.bounds
     const map = mapRef.current
-    if (!b || !map) return
+    if (!map) return
+    const [west, south, east, north] = ENV_BOUNDS
     // fitBounds non accetta pitch ≠ 0 nel calcolo: prima inquadro il dominio a
     // piatto per ricavare centro/zoom, poi easeTo con il pitch obliquo.
     const cam = map.cameraForBounds(
       [
-        [b.west, b.south],
-        [b.east, b.north],
+        [west, south],
+        [east, north],
       ],
       { padding: { top: 90, bottom: 160, left: 70, right: 70 } },
     )
@@ -2297,24 +2255,12 @@ export default function MapViewer({
     setEnvVisible(on ? { [key]: true } : {})
     if (on) flyToEnvDomain()
   }
-  // Quota (indice banda) selezionata dallo slider altezza per gli overlay
-  // microclima 3D. Default 2 = livello pedonale (~1.5 m). Lo slider commuta il
-  // PNG dell'overlay attivo a quella quota (vedi effect dedicato).
+  // Quota (indice banda 0-53 del cubo) selezionata dallo slider altezza per
+  // gli overlay microclima 3D. Default 2 = livello pedonale (~1.5 m). Ora che
+  // il dato viene dal cubo GeoTIFF, TUTTE le 54 quote sono selezionabili
+  // (prima solo le 9 con un PNG precotto).
+  // (Quota suolo / piano del suolo / source: costanti in lib/envimetGeo.)
   const [envHeightBand, setEnvHeightBand] = useState(2)
-  // Quota del suolo (m s.l.m.) sotto il dominio ENVI-met, dal meta. Serve ad
-  // alzare il piano dell'overlay a base_terreno + z scelta (z deck = assoluti).
-  const [envGroundElev, setEnvGroundElev] = useState(ENV_GROUND_ELEV)
-  // Piano del suolo (elev = a + b*lon + c*lat) dal meta: il dominio ha una
-  // pendenza reale N-S (~13 m). Lo uso per INCLINARE il foglio microclima cosi'
-  // segue il suolo (a 1.5 m sta ~1.5 m sul suolo LOCALE, non galleggia sulla
-  // mediana). null -> foglio orizzontale a envGroundElev (retrocompatibile).
-  const [envGroundPlane, setEnvGroundPlane] = useState<
-    { a: number; b: number; c: number } | null
-  >(null)
-  // Campo `source` del meta ENVI-met (es. "...TALEA 2024-07-27 11:00 ..."):
-  // i dati microclima sono una FOTOGRAFIA di quell'istante, lo dichiariamo in
-  // legenda. null finche' il meta non e' caricato.
-  const [envSource, setEnvSource] = useState<string | null>(null)
   // ---- "MICROCLIMA VIVO": animazione multi-dato, tutta CLIENT-SIDE ---------
   // (motore in lib/microlive.ts). Un toggle dedicato nella categoria Microclima
   // accende TRE sistemi di particelle SOVRAPPOSTI all'overlay di base scelto:
@@ -2328,29 +2274,21 @@ export default function MapViewer({
   const [liveOn, setLiveOn] = useState(false)
   // Scatta quando i dati del vivo sono caricati/decodificati (avvia il loop).
   const [liveReady, setLiveReady] = useState(0)
-  type LiveValuesJson = {
-    w: number
-    h: number
-    v: (number | null)[]
-    z?: Record<string, (number | null)[]>
-  }
-  type LiveUvJson = {
-    w: number
-    h: number
-    bands: Record<string, { u: (number | null)[]; v: (number | null)[] }>
-  }
   const liveSysRef = useRef<{
     frame: DomainFrame
     wind: WindField
-    trails: WindTrails
+    /** Texture u/v per le scie GPU, ricostruita al cambio quota. */
+    windTex: WindTexture
+    /** Piano del suolo [a,b,c] per la quota delle scie (quota = a+b*lon+c*lat). */
+    groundPlane: [number, number, number]
+    /** Quota (m sul suolo) delle scie = quota dello slider. */
+    zM: number
     heat: Embers
     mist: Embers
-    // JSON dei valori di wind_speed: serve a ricampionare il modulo quando lo
-    // slider quota cambia banda (setSpeedGrid).
-    speedJson: LiveValuesJson
-    // Vettori u/v grezzi per quota (se la pipeline li ha esportati), altrimenti
-    // null -> si resta su direzione-da-PNG + modulo per quota.
-    uvJson: LiveUvJson | null
+    // Cubi flow_u/flow_v: al cambio quota dello slider si ricampiona la slice
+    // giusta (vettori vento ESATTI a ogni quota, dai GeoTIFF).
+    uCube: EnvimetCube
+    vCube: EnvimetCube
   } | null>(null)
   // Layer deck del vivo, ricostruiti a ogni frame dal loop rAF.
   const liveLayersRef = useRef<Layer[]>([])
@@ -2358,75 +2296,50 @@ export default function MapViewer({
   // rAF lo riusa cosi' com'e' (stesse istanze -> diff deck quasi gratis).
   const staticLayersRef = useRef<Layer[]>([])
 
-  // Carica e prepara (una volta) i dati del "vivo": griglie valori + direzione
-  // vento decodificata dal PNG. Tutto client-side, ~4 MB di JSON gia' in cache
-  // se l'utente ha cliccato sugli overlay.
+  // Carica e prepara (una volta) i dati del "vivo": i cubi GeoTIFF di
+  // flow_u/flow_v (vettori vento ESATTI a ogni quota), MRT e umidita', tutti
+  // decodificati NEL BROWSER (lib/envimetTif). Gia' in cache se l'utente ha
+  // acceso gli overlay corrispondenti.
   useEffect(() => {
     if (!liveOn || liveSysRef.current) return
-    const ovs = envimetOverlays
-    if (!ovs || ovs.length === 0) return
     let cancelled = false
     ;(async () => {
       try {
-        const byKey = (k: string) => ovs.find((o) => o.key === k)
-        const speedOv = byKey('wind_speed')
-        const mrtOv = byKey('mean_radiant_temp')
-        const humOv = byKey('humidity')
-        const dirOv = byKey('wind_direction')
-        if (!speedOv?.values || !mrtOv?.values || !humOv?.values) return
-        const fetchJson = (u: string) =>
-          fetch(withBase(u)).then((r) => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`)
-            return r.json()
-          })
-        const [speedJson, mrtJson, humJson] = (await Promise.all([
-          fetchJson(speedOv.values),
-          fetchJson(mrtOv.values),
-          fetchJson(humOv.values),
-        ])) as [LiveValuesJson, LiveValuesJson, LiveValuesJson]
-        // Vettori esatti se disponibili (export opzionale della pipeline)...
-        let uvJson: LiveUvJson | null = null
-        try {
-          uvJson = await fetchJson('/data/processed/envimet/wind_uv.values.json')
-        } catch {
-          uvJson = null
-        }
-        const frame = new DomainFrame(speedOv.coordinates)
-        const speedGrid = gridFromValues(speedJson, envHeightBand)
-        let wind: WindField
-        const uvBand = uvJson?.bands?.[String(envHeightBand)] ?? null
-        if (uvJson && uvBand) {
-          wind = WindField.fromUV(
-            { w: uvJson.w, h: uvJson.h, v: Float32Array.from(uvBand.u, (x) => (x == null ? NaN : x)) },
-            { w: uvJson.w, h: uvJson.h, v: Float32Array.from(uvBand.v, (x) => (x == null ? NaN : x)) },
-          )
-        } else if (dirOv) {
-          // ...altrimenti DECODIFICA CLIENT-SIDE del PNG direzione (LUT viridis).
-          const dirGrid = await decodePngGrid(
-            withBase(dirOv.image),
-            'viridis',
-            dirOv.range.min,
-            dirOv.range.max,
-          )
-          wind = WindField.fromDirSpeed(dirGrid, speedGrid)
-        } else {
-          return
-        }
+        const [uCube, vCube, mrtCube, humCube] = await Promise.all([
+          loadCube('flow_u'),
+          loadCube('flow_v'),
+          loadCube('mean_radiant_temp'),
+          loadCube('humidity'),
+        ])
         if (cancelled) return
-        const gp = envGroundPlane
-        const ground = (lon: number, lat: number) =>
-          gp ? gp.a + gp.b * lon + gp.c * lat : envGroundElev
-        const trails = new WindTrails(frame, wind, ground)
-        // Fiamme sempre dalla banda pedonale: e' li' che il caldo "si sente".
-        const heat = new Embers(frame, gridFromValues(mrtJson), ground, wind, {
+        const frame = envFrame()
+        const zIdx = Math.min(envHeightBand, uCube.nz - 1)
+        const wind = WindField.fromUV(sliceGrid(uCube, zIdx), sliceGrid(vCube, zIdx))
+        const gp = ENV_GROUND_PLANE
+        const groundPlane: [number, number, number] = [gp.a, gp.b, gp.c]
+        const windTex = buildWindTexture(frame, wind)
+        // Fumo sempre dalla banda pedonale: e' li' che il caldo "si sente".
+        // ~4k sprite CPU: il loop di step() resta sotto il ms, il costo vero
+        // e' il fill-rate GPU degli sprite sovrapposti (ok su GPU integrate).
+        const heat = new Embers(frame, sliceGrid(mrtCube, 2), envGroundAt, wind, {
           ...EMBER_HEAT,
-          count: 650,
+          count: 6500,
         })
-        const mist = new Embers(frame, gridFromValues(humJson), ground, wind, {
+        const mist = new Embers(frame, sliceGrid(humCube, 2), envGroundAt, wind, {
           ...EMBER_MIST,
-          count: 230,
+          count: 400,
         })
-        liveSysRef.current = { frame, wind, trails, heat, mist, speedJson, uvJson }
+        liveSysRef.current = {
+          frame,
+          wind,
+          windTex,
+          groundPlane,
+          zM: uCube.zM[zIdx] ?? 1.5,
+          heat,
+          mist,
+          uCube,
+          vCube,
+        }
         setLiveReady((x) => x + 1)
       } catch (e) {
         console.warn('[microclima vivo] dati non disponibili:', e)
@@ -2437,26 +2350,19 @@ export default function MapViewer({
     }
     // envHeightBand volutamente fuori: la quota e' gestita dall'effect sotto.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveOn, envimetOverlays, envGroundPlane, envGroundElev])
+  }, [liveOn])
 
-  // Slider quota: aggiorna modulo (e u/v esatti se presenti) del campo vento e
-  // la quota a cui volano le scie, senza ricreare i sistemi.
+  // Slider quota: ricampiona le slice u/v del campo vento alla nuova banda e
+  // aggiorna la quota a cui volano le scie, senza ricreare i sistemi.
   useEffect(() => {
     const sys = liveSysRef.current
     if (!sys) return
-    const uvBand = sys.uvJson?.bands?.[String(envHeightBand)] ?? null
-    if (sys.uvJson && uvBand) {
-      sys.wind.setUV(
-        { w: sys.uvJson.w, h: sys.uvJson.h, v: Float32Array.from(uvBand.u, (x) => (x == null ? NaN : x)) },
-        { w: sys.uvJson.w, h: sys.uvJson.h, v: Float32Array.from(uvBand.v, (x) => (x == null ? NaN : x)) },
-      )
-    } else {
-      sys.wind.setSpeedGrid(gridFromValues(sys.speedJson, envHeightBand))
-    }
-    const speedOv = (envimetOverlays ?? []).find((o) => o.key === 'wind_speed')
-    const zm = speedOv?.heights?.find((h) => h.band === envHeightBand)?.z_m
-    sys.trails.zM = zm ?? 1.5
-  }, [envHeightBand, liveReady, envimetOverlays])
+    const zIdx = Math.min(envHeightBand, sys.uCube.nz - 1)
+    sys.wind.setUV(sliceGrid(sys.uCube, zIdx), sliceGrid(sys.vCube, zIdx))
+    // Nuova texture u/v per il motore GPU (il campo alla quota e' cambiato).
+    sys.windTex = buildWindTexture(sys.frame, sys.wind)
+    sys.zM = sys.uCube.zM[zIdx] ?? 1.5
+  }, [envHeightBand, liveReady])
 
   // Loop di animazione (~30 fps): avanza i sistemi, ricostruisce i layer del
   // vivo e li compone con gli ULTIMI layer statici. In pagina nascosta rAF si
@@ -2480,7 +2386,6 @@ export default function MapViewer({
       if (dtMs < 33) return // cap ~30 fps: basta e avanza, risparmia batteria
       last = now
       const dt = Math.min(0.1, dtMs / 1000)
-      sys.trails.step(dt)
       sys.heat.step(dt, now / 1000)
       sys.mist.step(dt, now / 1000)
       liveLayersRef.current = buildLiveLayers(sys)
@@ -2493,7 +2398,10 @@ export default function MapViewer({
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [liveOn, liveReady])
+    // overlayReady nelle dipendenze: se il toggle e' gia' attivo al caricamento
+    // i dati possono arrivare PRIMA che l'overlay deck esista; senza ri-run il
+    // loop resterebbe morto (overlay catturato null all'avvio dell'effect).
+  }, [liveOn, liveReady, overlayReady])
   const [basemap, setBasemap] = useState<BasemapId>('dark')
   // Pannello basemap: ora e' un menu APRIBILE accanto alla barra di ricerca
   // (prima era un pannello fisso in basso a destra). Chiuso di default.
@@ -2597,38 +2505,38 @@ export default function MapViewer({
       window.removeEventListener('resize', measure)
     }
   }, [helpOpen, lang])
-  // Overlay microclima attivo come foglio 3D (SimpleMeshLayer texturizzata) o null.
-  // Il foglio è INCLINATO sul piano del suolo (envGroundPlane): ogni angolo ha
-  // la sua quota = suolo locale + z banda, così a 1.5/4.5 m segue la pendenza
-  // N-S del dominio (~13 m) invece di galleggiare sulla mediana. Lo slider quota
-  // cambia l'immagine e fa salire/scendere il foglio.
-  const envOverlayImg = useMemo<
+  // Overlay microclima attivo come foglio 3D (SimpleMeshLayer texturizzata) o
+  // null. Il DATO viene dal cubo GeoTIFF decodificato nel browser: qui si
+  // prende la slice della quota dello slider e la si COLORA client-side
+  // (lib/envimetColor, stessa rampa dei vecchi PNG). Il foglio è INCLINATO sul
+  // piano del suolo: ogni angolo ha la sua quota = suolo locale + z banda,
+  // così a 1.5/4.5 m segue la pendenza N-S del dominio (~13 m).
+  const envSlice = useMemo<
     {
-      url: string
-      coordinates: EnvimetOverlay['coordinates']
+      def: EnvimetVarDef
+      cube: EnvimetCube
+      /** Slice colorata (RGBA) pronta come texture del foglio. */
+      image: ImageData
+      values: Float32Array
+      zIdx: number
       zM: number
-      // Quota del suolo a un punto qualsiasi: usata come FALLBACK dal foglio-mesh
-      // (envSheet) quando il terreno 3D non è ancora caricato. Piano del suolo se
-      // disponibile (segue la pendenza), altrimenti il suolo mediano.
+      // Quota del suolo a un punto qualsiasi: FALLBACK del foglio-mesh quando
+      // il terreno 3D non è ancora caricato (piano del suolo, segue la pendenza).
       groundAt: (lon: number, lat: number) => number
     } | null
   >(() => {
-    const ov = (envimetOverlays ?? []).find((o) => envVisible[o.key])
-    if (!ov) return null
-    const hs = ov.heights ?? []
-    const sel = hs.find((h) => h.band === envHeightBand) ?? hs[0]
+    const def = ENV_OVERLAYS.find((o) => envVisible[o.key])
+    if (!def) return null
+    const cube = getCubeSync(def.key)
+    if (!cube) return null // envCubeTick nelle deps: riprova quando il cubo arriva
+    const zIdx = def.agg === 'band' ? Math.min(envHeightBand, cube.nz - 1) : 0
+    const values = def.agg === 'maxz' ? maxZSlice(cube) : bandSlice(cube, zIdx)
+    const [vmin, vmax] = cubeRange(cube)
+    const image = colorizeSlice(values, cube.w, cube.h, def.ramp, vmin, vmax)
     // Quota (m sul suolo) della banda scelta: il foglio sale a questa altezza.
-    const zM = sel?.z_m ?? 1.5
-    const gp = envGroundPlane
-    const groundAt = (lon: number, lat: number) =>
-      gp ? gp.a + gp.b * lon + gp.c * lat : envGroundElev
-    return {
-      url: withBase(sel ? sel.image : ov.image),
-      coordinates: ov.coordinates,
-      zM,
-      groundAt,
-    }
-  }, [envimetOverlays, envVisible, envHeightBand, envGroundPlane, envGroundElev])
+    const zM = def.agg === 'band' ? (cube.zM[zIdx] ?? 1.5) : 1.5
+    return { def, cube, image, values, zIdx, zM, groundAt: envGroundAt }
+  }, [envVisible, envHeightBand, envCubeTick])
 
   // Mesh del foglio microclima che SEGUE IL TERRENO (vedi buildEnvSheetMesh):
   // ogni vertice a `quota_terreno_reale + z_banda`, campionando la quota dal
@@ -2637,9 +2545,9 @@ export default function MapViewer({
   // overlay/quota o quando il terreno diventa pronto (overlayReady). `elevAt` è
   // riusato per posare il pallino del punto cliccato sul foglio.
   const envSheet = useMemo(() => {
-    if (!envOverlayImg) return null
+    if (!envSlice) return null
     const map = mapRef.current
-    const c = envOverlayImg.coordinates
+    const c = ENV_CORNERS
     const anchorLng = (c[0][0] + c[1][0] + c[2][0] + c[3][0]) / 4
     const anchorLat = (c[0][1] + c[1][1] + c[2][1] + c[3][1]) / 4
     const qe =
@@ -2656,11 +2564,11 @@ export default function MapViewer({
       const e = qe ? qe.call(map, [lng, lat]) : null
       return typeof e === 'number' && Number.isFinite(e)
         ? e
-        : envOverlayImg.groundAt(lng, lat)
+        : envSlice.groundAt(lng, lat)
     }
     const mesh = buildEnvSheetMesh(
       [c[0], c[1], c[2], c[3]] as [number, number][],
-      envOverlayImg.zM,
+      envSlice.zM,
       elevAt,
       anchorLng,
       anchorLat,
@@ -2672,7 +2580,7 @@ export default function MapViewer({
     }
     // overlayReady: ricostruisce quando il terreno è caricato (quote reali).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [envOverlayImg, overlayReady])
+  }, [envSlice, overlayReady])
 
   // Ref aggiornato a `currentTime`: serve dentro callback registrate al
   // mount (basemap switch, addCustomLayers) per leggere SEMPRE l'ora
@@ -2838,104 +2746,103 @@ export default function MapViewer({
         setAirStations(fc.features as AirStation[])
       })
       .catch(() => {})
-    // Overlay microclima ENVI-met (output di build_envimet_overlays.py). Se il
-    // file non c'e' ancora, i toggle 'Microclima' restano disabilitati.
-    fetch(ENVIMET_OVERLAYS_URL)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((meta) => {
-        if (cancelled || !meta || !Array.isArray(meta.overlays)) return
-        envimetRef.current = meta.overlays as EnvimetOverlay[]
-        setEnvimetOverlays(meta.overlays as EnvimetOverlay[])
-        if (typeof meta.ground_elev === 'number') setEnvGroundElev(meta.ground_elev)
-        if (
-          meta.ground_plane &&
-          typeof meta.ground_plane.a === 'number' &&
-          typeof meta.ground_plane.b === 'number' &&
-          typeof meta.ground_plane.c === 'number'
-        ) {
-          setEnvGroundPlane(meta.ground_plane)
-        }
-        if (typeof meta.source === 'string') setEnvSource(meta.source)
-        const map = mapRef.current
-        if (map && map.isStyleLoaded()) reapplyRef.current?.()
-      })
-      .catch(() => {})
+    // (Gli overlay microclima ENVI-met vengono dal registry statico + cubi
+    // GeoTIFF decodificati nel browser: niente piu' overlays.json da caricare.)
     return () => {
       cancelled = true
     }
   }, [])
 
-  // Carica (lazy) i sampler ENVI-met per gli overlay attualmente accesi, e
-  // calcola i valori al punto cliccato. Vedi lib/envimet.ts per il
-  // posizionamento sul dominio ruotato.
+  // Carica (lazy) i CUBI GeoTIFF delle variabili accese: il download parte al
+  // toggle, la decodifica gira in un worker (lib/envimetTif), e `envLoading`
+  // guida l'indicatore di avanzamento accanto alla voce del pannello. La MRT
+  // si carica anche per 'Edifici -> temperatura' (valore al click).
   useEffect(() => {
-    const overlays = envimetOverlays ?? []
-    let cancelled = false
-    for (const o of overlays) {
-      // Carico il sampler se l'overlay e' acceso OPPURE, per la MRT, se e'
-      // attivo 'Edifici -> temperatura' (cosi' il click mostra la temperatura
-      // percepita anche senza l'overlay raster acceso).
-      const on =
-        envVisible[o.key] ||
-        (o.key === 'mean_radiant_temp' && visibility['buildings-temp'])
-      // Solo i curati hanno la griglia valori (`values`); per gli altri niente
-      // popup al click.
-      if (!on || !o.values || envRequestedRef.current.has(o.key)) continue
-      envRequestedRef.current.add(o.key)
-      fetch(withBase(o.values))
-        .then((r) => (r.ok ? r.json() : null))
-        .then((grid) => {
-          if (cancelled || !grid) return
-          envSamplersRef.current[o.key] = buildEnvimetSampler(
-            o.coordinates,
-            grid,
-          )
-          setSamplersReady((v) => v + 1)
+    const wanted = new Set<string>()
+    for (const o of ENV_OVERLAYS) if (envVisible[o.key]) wanted.add(o.key)
+    if (visibility['buildings-temp']) wanted.add('mean_radiant_temp')
+    for (const key of wanted) {
+      if (getCubeSync(key)) continue
+      setEnvLoading((s) => (key in s ? s : { ...s, [key]: { loaded: 0, total: 0 } }))
+      loadCube(key, (loaded, total) =>
+        setEnvLoading((s) => ({ ...s, [key]: { loaded, total } })),
+      )
+        .then(() => {
+          setEnvLoading((s) => {
+            const { [key]: _drop, ...rest } = s
+            return rest
+          })
+          setEnvCubeTick((t) => t + 1)
         })
         .catch(() => {
-          envRequestedRef.current.delete(o.key)
+          // Tif assente (variabile non "shipped" online) o decodifica fallita:
+          // la voce resta spuntabile ma il toggle mostra l'errore.
+          setEnvLoading((s) => ({ ...s, [key]: 'error' }))
         })
     }
-    return () => {
-      cancelled = true
-    }
-  }, [visibility, envVisible, envimetOverlays])
+  }, [visibility, envVisible])
 
-  // Deriva i valori al punto cliccato dai layer attivi + sampler pronti.
+  // Deriva i valori al punto cliccato dai layer attivi + cubi pronti, e il
+  // PROFILO VERTICALE completo (tutte le 54 quote) della variabile attiva:
+  // col cubo in memoria "il valore a ogni quota" e' una lettura gratis.
   useEffect(() => {
     if (!probe) {
       setPointEnv([])
+      setPointProfile(null)
       return
     }
     const { lat, lon } = probe
-    const active = (envimetRef.current ?? []).filter((o) => envVisible[o.key])
+    const frame = envFrame()
+    const active = ENV_OVERLAYS.filter((o) => envVisible[o.key])
     // Se 'Edifici -> temperatura' e' attivo, mostra comunque la temperatura
     // percepita (MRT) al punto cliccato (anche con l'overlay raster spento):
     // e' la grandezza con cui sono colorati gli edifici.
     if (visibility['buildings-temp']) {
-      const mrtOv = (envimetRef.current ?? []).find(
-        (o) => o.key === 'mean_radiant_temp',
-      )
-      if (mrtOv && !active.some((o) => o.key === 'mean_radiant_temp')) {
-        active.unshift(mrtOv)
+      const mrtDef = ENV_OVERLAYS.find((o) => o.key === 'mean_radiant_temp')
+      if (mrtDef && !active.some((o) => o.key === 'mean_radiant_temp')) {
+        active.unshift(mrtDef)
       }
+    }
+    const sample = (o: EnvimetVarDef): number | null => {
+      const cube = getCubeSync(o.key)
+      if (!cube) return null
+      const [u, v] = frame.uvFromLonLat(lon, lat)
+      // Variabili max-z (vegetazione): si campiona l'aggregato, non una banda.
+      const grid =
+        o.agg === 'maxz'
+          ? { w: cube.w, h: cube.h, v: maxZSlice(cube) }
+          : sliceGrid(cube, Math.min(envHeightBand, cube.nz - 1))
+      const x = frame.sample(grid, u, v)
+      return x == null ? null : Math.round(x * 10) / 10
     }
     setPointEnv(
       active.map((o) => ({
         key: o.key,
-        label: o.label,
+        label: envLabel(o, lang),
         unit: o.unit,
         // Per la MRT preferisco quella dell'edificio cliccato (esatta, = colore
-        // dell'edificio); altrimenti campiono il raster.
+        // dell'edificio); altrimenti campiono il cubo alla quota dello slider.
         value:
           o.key === 'mean_radiant_temp' && probeBuildingTempRef.current != null
             ? probeBuildingTempRef.current
-            : // Campiona la QUOTA scelta dallo slider (envHeightBand), così il
-              // valore segue il "foglio" che sale; fallback alla banda pedonale.
-              (envSamplersRef.current[o.key]?.(lon, lat, envHeightBand) ?? null),
+            : sample(o),
       })),
     )
-  }, [probe, visibility, envVisible, envimetOverlays, samplersReady, envHeightBand])
+    // Profilo verticale della prima variabile attiva con dimensione z.
+    const profDef = active.find((o) => o.agg === 'band')
+    const profCube = profDef ? getCubeSync(profDef.key) : null
+    if (profDef && profCube) {
+      const prof = verticalProfile(profCube, lon, lat)
+      const [vmin, vmax] = cubeRange(profCube)
+      setPointProfile(
+        prof.some((p) => p.v != null)
+          ? { def: profDef, points: prof, vmin, vmax }
+          : null,
+      )
+    } else {
+      setPointProfile(null)
+    }
+  }, [probe, visibility, envVisible, envCubeTick, envHeightBand, lang])
 
   // Marker DOM delle stazioni qualita' aria (sempre sopra agli edifici 3D,
   // che con deck.gl occluderebbero i cerchi MapLibre). Click -> popup con le
@@ -3016,7 +2923,7 @@ export default function MapViewer({
     // è attivo un foglio microclima SOLLEVATO, il marker sul terreno resterebbe
     // sotto il foglio: in quel caso lo nascondo e uso il disco piatto deck.gl
     // posato sul foglio (vedi 'env-probe-dot').
-    if (!probe || envOverlayImg) {
+    if (!probe || envSlice) {
       probeMarkerRef.current?.remove()
       probeMarkerRef.current = null
       return
@@ -3039,7 +2946,7 @@ export default function MapViewer({
     } else {
       probeMarkerRef.current.setLngLat([probe.lon, probe.lat])
     }
-  }, [probe, envOverlayImg])
+  }, [probe, envSlice])
 
   // Popup info dell'albero cliccato (marker DOM MapLibre, sopra agli edifici
   // deck.gl). Un nuovo click su un altro albero lo sposta; un click sul vuoto
@@ -3582,26 +3489,9 @@ export default function MapViewer({
   }, [currentTime])
 
 
-  // Overlay microclima ENVI-met DRAPPEGGIATO sul terreno 3D: sorgente `image`
-  // MapLibre + layer `raster` (come il vento). MapLibre lo spalma sulla mesh del
-  // terreno, quindi segue il rilievo per-pixel e a quote basse il terreno non lo
-  // buca piu' (prima era un foglio piatto deck.gl). Lo slider quota aggiorna solo
-  // l'immagine. `basemap` nelle deps: dopo un cambio basemap lo stile si ricarica
-  // e va ri-aggiunto.
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map) return
-    // L'overlay microclima ora è una SimpleMeshLayer che SEGUE il terreno
-    // (mesh env-sheet a quota_terreno+z, vedi envSheet nei layer deck), non più
-    // una raster MapLibre drappeggiata sul terreno. Qui rimuovo solo eventuali
-    // residui della vecchia sorgente immagine (es. dopo un hot-reload).
-    const prevId = envOverlayIdRef.current
-    if (prevId && map.isStyleLoaded()) {
-      if (map.getLayer(prevId)) map.removeLayer(prevId)
-      if (map.getSource(prevId)) map.removeSource(prevId)
-      envOverlayIdRef.current = null
-    }
-  }, [envOverlayImg, basemap])
+  // (L'overlay microclima è una SimpleMeshLayer deck che segue il terreno —
+  // vedi envSheet / buildEnvSheetMesh; l'effect che ripuliva i residui della
+  // vecchia sorgente raster MapLibre è stato rimosso con la sorgente stessa.)
 
   // Toggle layer + propagazione dati alberi/altezze quando cambiano.
   // Ricrea l'overlay deck al cambio del toggle "Ombre". Con interleaved NON si
@@ -3680,10 +3570,11 @@ export default function MapViewer({
         // usa tutta e le case "che scottano" si distinguono.
         let mrtRange: { min: number; max: number } | null = null
         if (visibility['buildings-temp']) {
-          const mrtOv = (envimetRef.current ?? []).find(
-            (o) => o.key === 'mean_radiant_temp',
-          )
-          mrtRange = mrtOv ? (mrtOv.observed ?? mrtOv.range) : { min: 20, max: 80 }
+          // Range osservato dal cubo MRT (min/max reali), fallback al fisso.
+          const mrtCube = getCubeSync('mean_radiant_temp')
+          mrtRange = mrtCube
+            ? { min: mrtCube.min, max: mrtCube.max }
+            : { min: 20, max: 80 }
         }
         // Luce: aggiorno sole/ambient con l'ora. castShadows = stato del toggle
         // "Ombre" (l'overlay e' stato creato/ricreato con _shadow coerente, vedi
@@ -3725,20 +3616,23 @@ export default function MapViewer({
             // (I tetti rossi sono ora tinti nello shader degli edifici stessi —
             // vedi RoofTopColorExtension — niente piu' layer di tetti separato.)
             // OVERLAY MICROCLIMA = foglio che SEGUE IL TERRENO: SimpleMeshLayer
-            // texturizzata col PNG dell'overlay; la mesh è una griglia con OGNI
-            // vertice a `quota_terreno_reale + z_banda` (vedi envSheet /
+            // con texture COLORATA NEL BROWSER dalla slice del cubo GeoTIFF
+            // (lib/envimetColor, niente più PNG precotti); la mesh è una griglia
+            // con OGNI vertice a `quota_terreno_reale + z_banda` (vedi envSheet /
             // buildEnvSheetMesh). Depth test NORMALE: gli edifici lo occludono
             // (niente raggi-X "sopra le case") e, essendo sempre ~z sopra il
             // suolo, il terreno non lo "buca" più (niente zone vuote a 1.5/4.5 m).
-            envSheet && envOverlayImg
+            envSheet && envSlice
               ? new SimpleMeshLayer({
                   id: 'env-sheet',
                   data: ENV_SHEET_DATA,
                   mesh: envSheet.mesh,
-                  texture: envOverlayImg.url,
+                  texture: envSlice.image,
                   getPosition: () => envSheet.anchor,
                   getColor: [255, 255, 255, 255],
-                  opacity: 0.85,
+                  // Col "vivo" acceso il foglio si attenua: il fumo del caldo
+                  // deve essere il protagonista, non annegare nell'arancione.
+                  opacity: liveOn ? 0.3 : 0.85,
                   material: false, // niente luce: i colori del dato restano fedeli
                   pickable: false,
                   parameters: { depthCompare: 'less-equal' },
@@ -3748,7 +3642,7 @@ export default function MapViewer({
             // (alla sua quota): così torna "sul pannello" anche ora che il foglio
             // è sollevato (il marker DOM resterebbe sul terreno, sotto). depthTest
             // off = sempre visibile sul foglio.
-            probe && envOverlayImg
+            probe && envSlice
               ? new ScatterplotLayer<[number, number, number]>({
                   id: 'env-probe-dot',
                   data: [
@@ -3758,8 +3652,8 @@ export default function MapViewer({
                       // Sul foglio: quota terreno REALE al punto + quota banda.
                       (envSheet
                         ? envSheet.elevAt(probe.lon, probe.lat)
-                        : envOverlayImg.groundAt(probe.lon, probe.lat)) +
-                        envOverlayImg.zM +
+                        : envSlice.groundAt(probe.lon, probe.lat)) +
+                        envSlice.zM +
                         0.5,
                     ],
                   ],
@@ -3853,7 +3747,11 @@ export default function MapViewer({
     currentTime,
     fadeCenter,
     probe,
-    envOverlayImg,
+    envSlice,
+    // envCubeTick: il range MRT degli edifici legge il cubo appena caricato.
+    envCubeTick,
+    // liveOn: il foglio microclima cambia opacita' quando il "vivo" e' acceso.
+    liveOn,
   ])
 
   // (L'overlay microclima e' una SimpleMeshLayer che segue il terreno —
@@ -4173,8 +4071,8 @@ export default function MapViewer({
   ): { mix: SoundMix; label: string } | null => {
     const map = mapRef.current
     if (!map) return null
-    const b = (envimetRef.current ?? [])[0]?.bounds
-    if (b && (lon < b.west || lon > b.east || lat < b.south || lat > b.north)) {
+    const [west, south, east, north] = ENV_BOUNDS
+    if (lon < west || lon > east || lat < south || lat > north) {
       return null // fuori dalla zona microclima -> silenzio
     }
     const pt = map.project([lon, lat])
@@ -4634,15 +4532,17 @@ export default function MapViewer({
               </button>
             )
 
-            // MICROCLIMA: lista DINAMICA da envimetOverlays, uno alla volta
-            // (radio). Per i cittadini mostriamo SOLO i 7 dati curati; le ~31
-            // variabili tecniche stanno in un sotto-gruppo "Dati tecnici" a
-            // scomparsa (chiuso di default), cosi' la lista resta corta e chiara.
+            // MICROCLIMA: lista dal REGISTRY statico (lib/envimetRegistry),
+            // uno alla volta (radio). Per i cittadini mostriamo SOLO gli 8 dati
+            // curati; le variabili tecniche stanno in un sotto-gruppo "Dati
+            // tecnici" a scomparsa (chiuso di default), cosi' la lista resta
+            // corta e chiara. Al toggle parte download+decodifica del GeoTIFF
+            // nel browser: la percentuale accanto alla voce e' il progresso.
             if (cat.key === 'microclima') {
-              const ovs = envimetOverlays ?? []
+              const ovs = ENV_OVERLAYS
               const curatedOvs = ovs.filter((o) => o.curated)
               // Dati tecnici nascosti di default (SHOW_TECHNICAL_ENVIMET): il
-              // cittadino vede solo i 7 curati. Per riattivarli vedi la costante.
+              // cittadino vede solo i curati. Per riattivarli vedi la costante.
               const techOvs = SHOW_TECHNICAL_ENVIMET
                 ? ovs.filter((o) => !o.curated)
                 : []
@@ -4650,23 +4550,45 @@ export default function MapViewer({
               const shownOvs = [...curatedOvs, ...techOvs]
               const active = shownOvs.filter((o) => envVisible[o.key]).length
               const techActive = techOvs.filter((o) => envVisible[o.key]).length
-              const ovRow = (o: EnvimetOverlay, dim = false) => (
-                <label
-                  key={o.key}
-                  className={`flex items-center gap-2 text-sm cursor-pointer hover:text-talea-300 ${
-                    dim ? 'text-[#5a7a67]' : 'text-talea-200'
-                  }`}
-                  title={dim ? 'Dato tecnico ENVI-met' : undefined}
-                >
-                  <input
-                    type="checkbox"
-                    checked={!!envVisible[o.key]}
-                    onChange={(e) => selectEnv(o.key, e.target.checked)}
-                    className="accent-talea-400 cursor-pointer"
-                  />
-                  <span>{envLabel(o, lang)}</span>
-                </label>
-              )
+              const ovRow = (o: EnvimetVarDef, dim = false) => {
+                const st = envLoading[o.key]
+                return (
+                  <label
+                    key={o.key}
+                    className={`flex items-center gap-2 text-sm cursor-pointer hover:text-talea-300 ${
+                      dim ? 'text-[#5a7a67]' : 'text-talea-200'
+                    }`}
+                    title={dim ? 'Dato tecnico ENVI-met' : undefined}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!envVisible[o.key]}
+                      onChange={(e) => selectEnv(o.key, e.target.checked)}
+                      className="accent-talea-400 cursor-pointer"
+                    />
+                    <span>{envLabel(o, lang)}</span>
+                    {/* Avanzamento download/decodifica del GeoTIFF nel browser. */}
+                    {st === 'error' ? (
+                      <span
+                        className="text-red-400/80 text-[10px] font-mono"
+                        title={
+                          lang === 'it'
+                            ? 'Dato non disponibile (file .tif assente)'
+                            : 'Data unavailable (missing .tif file)'
+                        }
+                      >
+                        !
+                      </span>
+                    ) : st && envVisible[o.key] ? (
+                      <span className="text-talea-300/70 text-[10px] font-mono tabular-nums">
+                        {st.total > 0
+                          ? `${Math.min(99, Math.round((st.loaded / st.total) * 100))}%`
+                          : '…'}
+                      </span>
+                    ) : null}
+                  </label>
+                )
+              }
               return (
                 <div key={cat.key} className="border-b border-talea-400/10 last:border-0 pb-1 mb-0.5">
                   {collapseBtn(active, shownOvs.length)}
@@ -4827,21 +4749,19 @@ export default function MapViewer({
         </div>
       </div>
 
-      {/* Slider ALTEZZA per gli overlay microclima 3D: appare solo quando e'
-          attivo un overlay con piu' quote. Verticale (in alto = piu' in alto):
-          commuta il PNG dell'overlay alla quota scelta. Intuitivo: "vedi il
-          dato a 1,5 m (pedonale) fino sopra i tetti". */}
+      {/* Slider ALTEZZA per gli overlay microclima 3D: appare quando e' attivo
+          un overlay con dimensione verticale e il suo cubo e' caricato.
+          Verticale (in alto = piu' in alto). Col cubo GeoTIFF in memoria sono
+          selezionabili TUTTE le 54 quote (0.3 -> 148.5 m), non piu' solo le 9
+          con un PNG precotto: "vedi il dato a 1,5 m fino sopra i tetti". */}
       {(() => {
-        const ov = (envimetOverlays ?? []).find(
-          (o) => envVisible[o.key] && (o.heights?.length ?? 0) > 0,
+        const ov = ENV_OVERLAYS.find(
+          (o) => envVisible[o.key] && o.agg === 'band',
         )
-        if (!ov || !ov.heights) return null
-        const heights = ov.heights
-        const idx = Math.max(
-          0,
-          heights.findIndex((h) => h.band === envHeightBand),
-        )
-        const cur = heights[idx] ?? heights[0]
+        const cube = ov ? getCubeSync(ov.key) : null
+        if (!ov || !cube) return null
+        const idx = Math.min(envHeightBand, cube.nz - 1)
+        const zLabel = (b: number) => Math.round(cube.zM[b] * 10) / 10
         return (
           // A DESTRA (centrata in verticale), come richiesto. Compatta.
           <div className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1.5 bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl" data-help="height">
@@ -4853,32 +4773,29 @@ export default function MapViewer({
                 richiesta utente). Mostra la quota della banda agganciata. */}
             <div className="flex items-baseline gap-1">
               <span className="text-talea-100 text-base font-mono font-bold tabular-nums">
-                {cur.z_m}
+                {zLabel(idx)}
               </span>
               <span className="text-talea-300 text-[10px] font-mono">m</span>
             </div>
             {/* Slider per INDICE di banda (1 tacca = 1 quota), NON proporzionale
-                ai metri: le quote sono molto disuniformi (1.5, 4.5, ... 40.5,
-                58.5 m), quindi un range in metri schiacciava le 6 quote basse
-                nel ~25% inferiore e diventava impossibile selezionarle. A passo
-                costante ogni quota ha lo stesso spazio -> selezione affidabile.
-                L'etichetta sopra mostra comunque i metri reali della banda. */}
+                ai metri: la griglia z e' telescopica (fitta sotto, rada sopra),
+                quindi un range in metri schiacciava le quote basse — quelle che
+                interessano — in fondo alla corsa. A passo costante ogni quota ha
+                lo stesso spazio -> selezione affidabile. L'etichetta sopra
+                mostra comunque i metri reali della banda. */}
             <input
               type="range"
               min={0}
-              max={heights.length - 1}
+              max={cube.nz - 1}
               step={1}
               value={idx}
-              onChange={(e) => {
-                const i = Number(e.target.value)
-                setEnvHeightBand((heights[i] ?? heights[0]).band)
-              }}
+              onChange={(e) => setEnvHeightBand(Number(e.target.value))}
               className="accent-talea-400 h-32 cursor-pointer"
               style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
               aria-label={lang === 'it' ? 'Altezza dal suolo' : 'Height above ground'}
             />
             <div className="text-[#7a9a87] text-[9px] font-mono leading-none text-center">
-              {heights[0].z_m}–{heights[heights.length - 1].z_m} m
+              {zLabel(0)}–{zLabel(cube.nz - 1)} m
             </div>
           </div>
         )
@@ -5408,27 +5325,23 @@ export default function MapViewer({
       {/* Colonna in alto a destra: prima le info del punto cliccato, poi la
           legenda (overlay microclima + scala temperatura edifici) SOTTO. */}
       {(() => {
-        const activeEnv = (envimetOverlays ?? []).filter(
-          (o) => envVisible[o.key],
-        )
-        const tempOv = (envimetOverlays ?? []).find((o) => o.key === 'temperature')
-        // Le facciate ora mostrano la temperatura PERCEPITA (MRT) che sale con
-        // la quota: la legenda usa la sua scala (osservata).
-        const mrtOv = (envimetOverlays ?? []).find(
-          (o) => o.key === 'mean_radiant_temp',
-        )
+        const activeEnv = ENV_OVERLAYS.filter((o) => envVisible[o.key])
         const showBuildingTemp = visibility['buildings-temp']
         const showNoise = visibility['noise']
         const showLegend = activeEnv.length > 0 || showBuildingTemp || showNoise
         if (!probe && !showLegend) return null
+        // Range osservato del cubo MRT per la legenda edifici (come il colore
+        // delle facciate); fallback al range fisso finche' il cubo carica.
+        const mrtCube = getCubeSync('mean_radiant_temp')
+        const mrtLegendRange = mrtCube
+          ? { min: mrtCube.min, max: mrtCube.max }
+          : { min: 20, max: 80 }
         // Data fissa della simulazione: mostrata quando e' attivo un dato
         // ENVI-met (overlay microclima o edifici per temperatura), non per il
         // solo rumore.
-        const envDate = formatEnvDate(envSource, lang)
+        const envDate = formatEnvDate(ENV_SOURCE, lang)
         const showEnvDate = (activeEnv.length > 0 || showBuildingTemp) && !!envDate
         const NOISE_GRAD = '#22c55e, #84cc16, #eab308, #f97316, #ef4444'
-        const gradient = (stops: { color: string }[]) =>
-          `linear-gradient(to right, ${stops.map((s) => s.color).join(', ')})`
         return (
           <>
             {/* Info del punto cliccato: IN ALTO a destra. */}
@@ -5438,10 +5351,25 @@ export default function MapViewer({
                   lat={probe.lat}
                   lon={probe.lon}
                   envSamples={pointEnv}
-                  heightM={
-                    activeEnv
-                      .find((o) => (o.heights?.length ?? 0) > 0)
-                      ?.heights?.find((h) => h.band === envHeightBand)?.z_m ?? null
+                  heightM={(() => {
+                    const o = activeEnv.find((x) => x.agg === 'band')
+                    const c = o ? getCubeSync(o.key) : null
+                    if (!c) return null
+                    const b = Math.min(envHeightBand, c.nz - 1)
+                    return Math.round(c.zM[b] * 10) / 10
+                  })()}
+                  profile={
+                    pointProfile
+                      ? {
+                          unit: pointProfile.def.unit,
+                          label: envLabel(pointProfile.def, lang),
+                          ramp: pointProfile.def.ramp,
+                          vmin: pointProfile.vmin,
+                          vmax: pointProfile.vmax,
+                          points: pointProfile.points,
+                          currentBand: envHeightBand,
+                        }
+                      : null
                   }
                   lang={lang}
                   onClose={() => setProbe(null)}
@@ -5465,29 +5393,21 @@ export default function MapViewer({
                   </div>
                 )}
                 <div className="flex flex-col gap-2">
-                  {showBuildingTemp && (mrtOv ?? tempOv) && (
+                  {showBuildingTemp && (
                     <div>
                       <div className="text-talea-200 text-[11px] font-mono mb-0.5">
                         {lang === 'it'
                           ? 'Edifici · temperatura percepita'
                           : 'Buildings · perceived temp.'}{' '}
-                        ({(mrtOv ?? tempOv)!.unit})
+                        (°C)
                       </div>
                       <div
                         className="h-2 rounded"
-                        style={{ background: gradient((mrtOv ?? tempOv)!.legend) }}
+                        style={{ background: rampCssGradient('ylorrd') }}
                       />
                       <div className="flex justify-between text-[#5a7a67] text-[10px] font-mono mt-0.5">
-                        <span>
-                          {Math.round(
-                            ((mrtOv ?? tempOv)!.observed ?? (mrtOv ?? tempOv)!.range).min,
-                          )}
-                        </span>
-                        <span>
-                          {Math.round(
-                            ((mrtOv ?? tempOv)!.observed ?? (mrtOv ?? tempOv)!.range).max,
-                          )}
-                        </span>
+                        <span>{Math.round(mrtLegendRange.min)}</span>
+                        <span>{Math.round(mrtLegendRange.max)}</span>
                       </div>
                       <p className="text-[#5a7a67] text-[10px] leading-snug mt-1">
                         {lang === 'it'
@@ -5511,34 +5431,39 @@ export default function MapViewer({
                       </div>
                     </div>
                   )}
-                  {activeEnv.map((o) => (
-                    <div key={o.key}>
-                      <div className="text-talea-200 text-[11px] font-mono mb-0.5">
-                        {envLabel(o, lang)} ({o.unit})
-                        {(o.heights?.length ?? 0) > 0 && (
-                          <span className="text-talea-300">
-                            {' '}
-                            @ {o.heights!.find((h) => h.band === envHeightBand)?.z_m ??
-                              o.heights![0].z_m}{' '}
-                            m
-                          </span>
+                  {activeEnv.map((o) => {
+                    const cube = getCubeSync(o.key)
+                    const range = envRangeOf(o)
+                    const zAt =
+                      o.agg === 'band' && cube
+                        ? Math.round(
+                            cube.zM[Math.min(envHeightBand, cube.nz - 1)] * 10,
+                          ) / 10
+                        : null
+                    return (
+                      <div key={o.key}>
+                        <div className="text-talea-200 text-[11px] font-mono mb-0.5">
+                          {envLabel(o, lang)} ({o.unit})
+                          {zAt != null && (
+                            <span className="text-talea-300"> @ {zAt} m</span>
+                          )}
+                        </div>
+                        <div
+                          className="h-2 rounded"
+                          style={{ background: rampCssGradient(o.ramp) }}
+                        />
+                        <div className="flex justify-between text-[#5a7a67] text-[10px] font-mono mt-0.5">
+                          <span>{range.min}</span>
+                          <span>{range.max}</span>
+                        </div>
+                        {o.desc && (
+                          <p className="text-[#5a7a67] text-[10px] leading-snug mt-1">
+                            {o.desc[lang]}
+                          </p>
                         )}
                       </div>
-                      <div
-                        className="h-2 rounded"
-                        style={{ background: gradient(o.legend) }}
-                      />
-                      <div className="flex justify-between text-[#5a7a67] text-[10px] font-mono mt-0.5">
-                        <span>{o.range.min}</span>
-                        <span>{o.range.max}</span>
-                      </div>
-                      {ENV_DESC[o.key] && (
-                        <p className="text-[#5a7a67] text-[10px] leading-snug mt-1">
-                          {ENV_DESC[o.key][lang]}
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             )}

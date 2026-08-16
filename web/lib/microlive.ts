@@ -1,29 +1,25 @@
 /**
  * "Microclima vivo" — motore CLIENT-SIDE della visualizzazione animata.
  *
- * Tutto il lavoro avviene nel browser, a partire dai dati grezzi gia' serviti
- * al client (nessun PNG pre-animato / GIF dal server):
+ * Tutto il lavoro avviene nel browser: le griglie di valori sono SLICE dei
+ * cubi GeoTIFF ENVI-met decodificati client-side (lib/envimetTif) — vettori
+ * vento u/v ESATTI a ogni quota da flow_u/flow_v, MRT e umidita' per fumo e
+ * foschia. (La vecchia decodifica del PNG `wind_direction` invertendo la LUT
+ * viridis non serve piu': i tif grezzi sono la sorgente dati del sito.)
  *
- *  - le griglie di VALORI (`<var>.values.json`, con quote `z`) escono dalla
- *    pipeline come numeri grezzi: qui vengono campionate, pesate e colorate;
- *  - la DIREZIONE del vento non ha (ancora) valori grezzi committati: viene
- *    DECODIFICATA dal PNG `wind_direction.png` invertendo la LUT viridis
- *    (stessa rampa di build_envimet_overlays.py) — una prova concreta di
- *    elaborazione raster lato client. Se in futuro la pipeline esporta
- *    `wind_uv.values.json` (vettori u/v esatti per quota), questo modulo lo
- *    usa al posto della decodifica (vedi WindField.fromMeta).
+ * Tre sistemi di particelle:
  *
- * Tre sistemi di particelle, aggiornati in JS a ogni frame e resi con layer
- * deck.gl ad attributi binari (upload GPU ~100 KB/frame, trascurabile):
- *
- *  - WindTrails  — scie stile windy.com avvette dal campo (direzione, velocita'
- *                  alla quota scelta con lo slider);
- *  - Embers      — "fiammelle" che salgono dove la temperatura percepita (MRT)
- *                  e' alta: piu' caldo = piu' dense, piu' veloci, piu' rosse;
+ *  - scie di vento — motore GPU in lib/windgl (transform feedback, derivato da
+ *                  WeatherLayers GL): qui si prepara solo la TEXTURE u/v
+ *                  ricampionata dal dominio ruotato (buildWindTexture);
+ *  - Embers      — pennacchi di FUMO CPU che salgono dove la temperatura
+ *                  percepita (MRT) e' alta: la "citta' che brucia" dei canyon
+ *                  stradali roventi (sprite soffici, non punti);
  *  - Mist        — foschia lenta e chiara dove l'umidita' relativa e' piu' alta.
  *
- * Nessuna dipendenza da deck.gl qui dentro: i sistemi riempiono TypedArray e
- * MapViewer li impacchetta nei layer (LineLayer / ScatterplotLayer).
+ * Embers/Mist riempiono TypedArray che MapViewer impacchetta in IconLayer
+ * (billboard con sprite radiale); le scie GPU vivono nel layer deck di
+ * lib/windgl.
  */
 
 // ---------------------------------------------------------------------------
@@ -32,130 +28,6 @@
 
 /** Griglia riga-major sul dominio ENVI-met. NaN = NoData. */
 export type Grid = { w: number; h: number; v: Float32Array }
-
-type ValuesJson = {
-  w: number
-  h: number
-  v: (number | null)[]
-  z?: Record<string, (number | null)[]>
-}
-
-function toFloat32(vals: (number | null)[]): Float32Array {
-  const out = new Float32Array(vals.length)
-  for (let i = 0; i < vals.length; i++) {
-    const x = vals[i]
-    out[i] = x === null || x === undefined ? NaN : x
-  }
-  return out
-}
-
-/** Converte un `<var>.values.json` in griglia; `band` sceglie la quota. */
-export function gridFromValues(json: ValuesJson, band?: number | null): Grid {
-  const grid =
-    (band != null && json.z && json.z[String(band)]) || json.v
-  return { w: json.w, h: json.h, v: toFloat32(grid) }
-}
-
-// ---------------------------------------------------------------------------
-// Decodifica PNG -> valori (inversione LUT, client-side)
-// ---------------------------------------------------------------------------
-
-type RampStop = [number, [number, number, number]]
-
-/** Stesse rampe di build_envimet_overlays.py (servono per invertire i PNG). */
-export const RAMPS: Record<string, RampStop[]> = {
-  viridis: [
-    [0.0, [68, 1, 84]],
-    [0.25, [59, 82, 139]],
-    [0.5, [33, 145, 140]],
-    [0.75, [94, 201, 98]],
-    [1.0, [253, 231, 37]],
-  ],
-  blues: [
-    [0.0, [247, 251, 255]],
-    [0.5, [107, 174, 214]],
-    [1.0, [8, 48, 107]],
-  ],
-}
-
-function buildLut(ramp: RampStop[]): Uint8Array {
-  // LUT 256x3, identica a build_lut() della pipeline Python.
-  const lut = new Uint8Array(256 * 3)
-  for (let i = 0; i < 256; i++) {
-    const t = i / 255
-    let rgb = ramp[ramp.length - 1][1]
-    for (let j = 0; j < ramp.length - 1; j++) {
-      const [t0, c0] = ramp[j]
-      const [t1, c1] = ramp[j + 1]
-      if (t0 <= t && t <= t1) {
-        const f = t1 === t0 ? 0 : (t - t0) / (t1 - t0)
-        rgb = [
-          Math.round(c0[0] + (c1[0] - c0[0]) * f),
-          Math.round(c0[1] + (c1[1] - c0[1]) * f),
-          Math.round(c0[2] + (c1[2] - c0[2]) * f),
-        ]
-        break
-      }
-    }
-    lut[i * 3] = rgb[0]
-    lut[i * 3 + 1] = rgb[1]
-    lut[i * 3 + 2] = rgb[2]
-  }
-  return lut
-}
-
-/**
- * Carica un overlay PNG della pipeline e lo riporta a VALORI cercando per ogni
- * pixel l'indice LUT col colore piu' vicino: value = vmin + idx/255*(vmax-vmin).
- * I pixel NoData (alpha bassa, verde salvia) diventano NaN. ~70k pixel: <100 ms.
- */
-export async function decodePngGrid(
-  url: string,
-  rampKey: keyof typeof RAMPS,
-  vmin: number,
-  vmax: number,
-): Promise<Grid> {
-  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const im = new Image()
-    im.crossOrigin = 'anonymous'
-    im.onload = () => resolve(im)
-    im.onerror = () => reject(new Error(`PNG non caricabile: ${url}`))
-    im.src = url
-  })
-  const canvas = document.createElement('canvas')
-  canvas.width = img.naturalWidth
-  canvas.height = img.naturalHeight
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) throw new Error('canvas 2d non disponibile')
-  ctx.drawImage(img, 0, 0)
-  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const lut = buildLut(RAMPS[rampKey])
-  const out = new Float32Array(canvas.width * canvas.height)
-  for (let p = 0; p < out.length; p++) {
-    const a = data[p * 4 + 3]
-    if (a < 200) {
-      out[p] = NaN // NoData (alpha 70 nella pipeline)
-      continue
-    }
-    const r = data[p * 4]
-    const g = data[p * 4 + 1]
-    const b = data[p * 4 + 2]
-    let best = 0
-    let bestD = Infinity
-    for (let i = 0; i < 256; i++) {
-      const dr = r - lut[i * 3]
-      const dg = g - lut[i * 3 + 1]
-      const db = b - lut[i * 3 + 2]
-      const d = dr * dr + dg * dg + db * db
-      if (d < bestD) {
-        bestD = d
-        best = i
-      }
-    }
-    out[p] = vmin + (best / 255) * (vmax - vmin)
-  }
-  return { w: canvas.width, h: canvas.height, v: out }
-}
 
 // ---------------------------------------------------------------------------
 // Geometria del dominio (parallelogramma ruotato in lon/lat)
@@ -197,6 +69,17 @@ export class DomainFrame {
     ]
   }
 
+  /** Inversa di lonLat: da lon/lat alle coordinate (u,v) del dominio ruotato. */
+  uvFromLonLat(lon: number, lat: number): [number, number] {
+    const dx = lon - this.TL[0]
+    const dy = lat - this.TL[1]
+    const det = this.e1[0] * this.e2[1] - this.e1[1] * this.e2[0]
+    return [
+      (dx * this.e2[1] - dy * this.e2[0]) / det,
+      (this.e1[0] * dy - this.e1[1] * dx) / det,
+    ]
+  }
+
   /** (m/s Est, m/s Nord) -> (du/dt, dv/dt): proiezione sugli assi del dominio. */
   velToUV(east: number, north: number): [number, number] {
     const du = (east * this.e1m[0] + north * this.e1m[1]) / (this.len1 * this.len1)
@@ -219,199 +102,103 @@ export class DomainFrame {
 // ---------------------------------------------------------------------------
 
 /**
- * Vettore vento (m/s Est/Nord) a (u,v). Due sorgenti possibili:
- *  - u/v grezzi per quota (`wind_uv.values.json`, se la pipeline li ha emessi);
- *  - direzione decodificata dal PNG (a ~1.5 m) + modulo dai valori grezzi di
- *    `wind_speed` alla quota scelta (approssimazione: la direzione cambia poco
- *    con la quota rispetto al modulo, che invece cresce molto).
- * Convenzione VERIFICATA sui dati (correlazione cella-cella con flow_u/flow_v
- * decodificati: corr(sin(dir),u)=+0.81): qui la direzione e' quella VERSO cui
- * scorre il vento, gradi da nord in senso orario -> E = +sin(dir), N = +cos(dir).
- * (Non e' la convenzione meteo "da dove proviene": segni opposti.)
+ * Vettore vento (m/s Est/Nord) a (u,v), dalle slice u/v dei cubi
+ * flow_u/flow_v (lib/envimetTif): vettori ESATTI per ogni quota, si
+ * ricampionano al volo quando lo slider quota cambia banda (setUV).
+ * Convenzione VERIFICATA sui dati: u = componente verso EST, v = verso NORD
+ * ("verso cui" scorre il vento, non la convenzione meteo "da dove proviene").
  */
 export class WindField {
-  private mode: 'uv' | 'dir'
-  private uGrid: Grid | null = null
-  private vGrid: Grid | null = null
-  private dirGrid: Grid | null = null
-  private speedGrid: Grid | null = null
+  private uGrid: Grid
+  private vGrid: Grid
 
   static fromUV(u: Grid, v: Grid): WindField {
-    const f = new WindField('uv')
-    f.uGrid = u
-    f.vGrid = v
-    return f
+    return new WindField(u, v)
   }
 
-  static fromDirSpeed(dir: Grid, speed: Grid): WindField {
-    const f = new WindField('dir')
-    f.dirGrid = dir
-    f.speedGrid = speed
-    return f
+  private constructor(u: Grid, v: Grid) {
+    this.uGrid = u
+    this.vGrid = v
   }
 
-  private constructor(mode: 'uv' | 'dir') {
-    this.mode = mode
-  }
-
-  /** Cambia la griglia del modulo quando lo slider quota si muove. */
-  setSpeedGrid(speed: Grid) {
-    this.speedGrid = speed
-  }
-
+  /** Cambia le griglie quando lo slider quota si muove. */
   setUV(u: Grid, v: Grid) {
     this.uGrid = u
     this.vGrid = v
   }
 
   at(frame: DomainFrame, u: number, v: number): [number, number] | null {
-    if (this.mode === 'uv') {
-      if (!this.uGrid || !this.vGrid) return null
-      const e = frame.sample(this.uGrid, u, v)
-      const n = frame.sample(this.vGrid, u, v)
-      if (e === null || n === null) return null
-      return [e, n]
-    }
-    if (!this.dirGrid || !this.speedGrid) return null
-    const dir = frame.sample(this.dirGrid, u, v)
-    const s = frame.sample(this.speedGrid, u, v)
-    if (dir === null || s === null) return null
-    const rad = (dir * Math.PI) / 180
-    return [s * Math.sin(rad), s * Math.cos(rad)]
+    const e = frame.sample(this.uGrid, u, v)
+    const n = frame.sample(this.vGrid, u, v)
+    if (e === null || n === null) return null
+    return [e, n]
   }
 }
 
 // ---------------------------------------------------------------------------
-// Scie di vento (stile windy.com)
+// Texture u/v per le scie di vento GPU (lib/windgl)
 // ---------------------------------------------------------------------------
 
 /** Quota del suolo (m slm) a lon/lat: il piano del dominio (meta ground_plane). */
 export type GroundFn = (lon: number, lat: number) => number
 
-const WIND_COUNT = 1400
-const WIND_TAIL = 5 // posizioni memorizzate -> TAIL-1 segmenti per scia
-/** Esagerazione visiva: a scala quartiere 1 m/s reale sarebbe impercettibile. */
+/** Esagerazione visiva: a scala quartiere 1 m/s reale sarebbe impercettibile.
+ * Usata dal trascinamento delle Embers; le scie GPU hanno il loro speedFactor. */
 const WIND_SPEED_SCALE = 7
-const WIND_MAX_AGE = [2.5, 6] // s, casuale per particella
 
-export class WindTrails {
-  private frame: DomainFrame
-  private field: WindField
-  private ground: GroundFn
-  /** Quota (m sul suolo) a cui volano le scie = quota dello slider. */
-  zM = 1.5
-  private pos: Float32Array // u,v per particella
-  private age: Float32Array
-  private maxAge: Float32Array
-  private tail: Float64Array // [particella][WIND_TAIL][lon,lat,alt]
-  private speed: Float32Array // ultimo modulo campionato (per il colore)
-  // Buffer binari per LineLayer (source/target xyz + rgba).
-  readonly src: Float64Array
-  readonly dst: Float64Array
-  readonly col: Uint8Array
-  readonly segments = WIND_COUNT * (WIND_TAIL - 1)
+/** Range m/s dei canali R/G della texture u/v (imageUnscale del layer GPU). */
+export const WIND_UNSCALE: [number, number] = [-8, 8]
 
-  constructor(frame: DomainFrame, field: WindField, ground: GroundFn) {
-    this.frame = frame
-    this.field = field
-    this.ground = ground
-    this.pos = new Float32Array(WIND_COUNT * 2)
-    this.age = new Float32Array(WIND_COUNT)
-    this.maxAge = new Float32Array(WIND_COUNT)
-    this.tail = new Float64Array(WIND_COUNT * WIND_TAIL * 3)
-    this.speed = new Float32Array(WIND_COUNT)
-    this.src = new Float64Array(this.segments * 3)
-    this.dst = new Float64Array(this.segments * 3)
-    this.col = new Uint8Array(this.segments * 4)
-    for (let i = 0; i < WIND_COUNT; i++) this.respawn(i)
-  }
+export type WindTexture = {
+  /** RGBA Uint8: R = componente Est, G = Nord (scalate su WIND_UNSCALE), A = dato/nodata. */
+  image: { data: Uint8Array; width: number; height: number }
+  /** BBox asse-allineata [ovest, sud, est, nord] che avvolge il dominio ruotato. */
+  bounds: [number, number, number, number]
+}
 
-  private respawn(i: number) {
-    const u = Math.random()
-    const v = Math.random()
-    this.pos[i * 2] = u
-    this.pos[i * 2 + 1] = v
-    this.age[i] = 0
-    this.maxAge[i] =
-      WIND_MAX_AGE[0] + Math.random() * (WIND_MAX_AGE[1] - WIND_MAX_AGE[0])
-    this.speed[i] = 0
-    const [lon, lat] = this.frame.lonLat(u, v)
-    const alt = this.ground(lon, lat) + this.zM + 1
-    for (let k = 0; k < WIND_TAIL; k++) {
-      this.tail[(i * WIND_TAIL + k) * 3] = lon
-      this.tail[(i * WIND_TAIL + k) * 3 + 1] = lat
-      this.tail[(i * WIND_TAIL + k) * 3 + 2] = alt
+/**
+ * Ricampiona il campo vento (dominio RUOTATO) su una griglia ASSE-ALLINEATA
+ * lon/lat, pronta da caricare come texture per il motore particelle GPU
+ * (lib/windgl). Riga 0 = nord (convenzione del layer). Fuori dominio o celle
+ * NoData -> alpha 0. ~130k campionamenti CPU una tantum: <50 ms.
+ */
+export function buildWindTexture(
+  frame: DomainFrame,
+  field: WindField,
+  width = 320,
+): WindTexture {
+  const corners: [number, number][] = [
+    frame.lonLat(0, 0),
+    frame.lonLat(1, 0),
+    frame.lonLat(0, 1),
+    frame.lonLat(1, 1),
+  ]
+  const west = Math.min(...corners.map((c) => c[0]))
+  const east = Math.max(...corners.map((c) => c[0]))
+  const south = Math.min(...corners.map((c) => c[1]))
+  const north = Math.max(...corners.map((c) => c[1]))
+  // Altezza proporzionale al bbox in metri (lat "vale" piu' della lon).
+  const aspect =
+    ((north - south) * 110540) /
+    ((east - west) * 111320 * Math.cos((south * Math.PI) / 180))
+  const height = Math.max(8, Math.round(width * aspect))
+  const [vmin, vmax] = WIND_UNSCALE
+  const span = vmax - vmin
+  const data = new Uint8Array(width * height * 4)
+  for (let y = 0; y < height; y++) {
+    const lat = north - ((y + 0.5) / height) * (north - south)
+    for (let x = 0; x < width; x++) {
+      const lon = west + ((x + 0.5) / width) * (east - west)
+      const [u, v] = frame.uvFromLonLat(lon, lat)
+      const w = field.at(frame, u, v)
+      const p = (y * width + x) * 4
+      if (!w) continue // alpha 0 = nodata
+      data[p] = Math.max(0, Math.min(255, Math.round(((w[0] - vmin) / span) * 255)))
+      data[p + 1] = Math.max(0, Math.min(255, Math.round(((w[1] - vmin) / span) * 255)))
+      data[p + 3] = 255
     }
   }
-
-  step(dt: number) {
-    for (let i = 0; i < WIND_COUNT; i++) {
-      const u = this.pos[i * 2]
-      const v = this.pos[i * 2 + 1]
-      const w = this.field.at(this.frame, u, v)
-      this.age[i] += dt
-      if (!w || this.age[i] > this.maxAge[i]) {
-        this.respawn(i)
-        continue
-      }
-      const s = Math.hypot(w[0], w[1])
-      this.speed[i] = s
-      const [du, dv] = this.frame.velToUV(
-        w[0] * WIND_SPEED_SCALE,
-        w[1] * WIND_SPEED_SCALE,
-      )
-      const nu = u + du * dt
-      const nv = v + dv * dt
-      if (nu < 0 || nu >= 1 || nv < 0 || nv >= 1) {
-        this.respawn(i)
-        continue
-      }
-      this.pos[i * 2] = nu
-      this.pos[i * 2 + 1] = nv
-      // Scorro la coda di una posizione e scrivo la nuova testa.
-      for (let k = WIND_TAIL - 1; k > 0; k--) {
-        const a = (i * WIND_TAIL + k) * 3
-        const b = (i * WIND_TAIL + k - 1) * 3
-        this.tail[a] = this.tail[b]
-        this.tail[a + 1] = this.tail[b + 1]
-        this.tail[a + 2] = this.tail[b + 2]
-      }
-      const [lon, lat] = this.frame.lonLat(nu, nv)
-      const head = i * WIND_TAIL * 3
-      this.tail[head] = lon
-      this.tail[head + 1] = lat
-      this.tail[head + 2] = this.ground(lon, lat) + this.zM + 1
-    }
-    // Ricostruisco i buffer dei segmenti (testa = luminosa, coda = svanisce).
-    let s3 = 0
-    let s4 = 0
-    for (let i = 0; i < WIND_COUNT; i++) {
-      // Fade-in in ~0.5 s alla nascita per evitare "lampi" al respawn.
-      const born = Math.min(1, this.age[i] / 0.5)
-      // Colore: lento = azzurro tenue, veloce = quasi bianco.
-      const t = Math.min(1, this.speed[i] / 3.5)
-      const r = 150 + 105 * t
-      const g = 200 + 55 * t
-      const b = 255
-      for (let k = 0; k < WIND_TAIL - 1; k++) {
-        const a = (i * WIND_TAIL + k) * 3
-        const bb = (i * WIND_TAIL + k + 1) * 3
-        this.src[s3] = this.tail[bb]
-        this.src[s3 + 1] = this.tail[bb + 1]
-        this.src[s3 + 2] = this.tail[bb + 2]
-        this.dst[s3] = this.tail[a]
-        this.dst[s3 + 1] = this.tail[a + 1]
-        this.dst[s3 + 2] = this.tail[a + 2]
-        const fade = 1 - k / (WIND_TAIL - 1)
-        this.col[s4] = r
-        this.col[s4 + 1] = g
-        this.col[s4 + 2] = b
-        this.col[s4 + 3] = Math.round(190 * fade * born)
-        s3 += 3
-        s4 += 4
-      }
-    }
-  }
+  return { image: { data, width, height }, bounds: [west, south, east, north] }
 }
 
 // ---------------------------------------------------------------------------
@@ -440,37 +227,50 @@ export type EmberOptions = {
   windDrag: number
   /** Esponente del peso di emissione: alto = concentra sulle celle piu' intense. */
   weightExp: number
+  /** Turbolenza orizzontale (m/s "visivi"): il fumo billowa invece di salire dritto. */
+  swirl: number
 }
 
-/** Preset FIAMME sul caldo percepito (MRT): dove "scotta" il quartiere brucia.
+/** Preset FUMO DI CALDO sul percepito (MRT): la "citta' che brucia".
  * Sui dati reali (11:00 estive) la MRT al sole si schiaccia a 66-80 °C
- * (mediana 66, max 80): soglia alla mediana + peso CUBICO cosi' le fiamme si
- * addensano sui canyon stradali piu' roventi invece di coprire tutto il sole. */
+ * (mediana 66, max 80): soglia alla mediana, peso quadratico cosi' il fumo
+ * riempie i canyon stradali al sole e si addensa dove scotta davvero.
+ * Sprite soffici grandi e sovrapposti (non punti): la densita' visiva nasce
+ * dalla sovrapposizione di tanti blob semi-trasparenti, come i pennacchi
+ * volumetrici del video di riferimento (brucia_amsterdam). */
 export const EMBER_HEAT: Omit<EmberOptions, 'count'> = {
-  threshold: 66, // °C MRT ~ mediana del dominio a mezzogiorno
+  threshold: 61, // °C MRT: sotto la mediana, quasi tutto il "sole" emette
   vmax: 80,
-  riseM: 12,
-  life: [1.6, 3.2],
-  radius: [0.7, 2.2],
-  color: (t) => [255, Math.round(200 - 130 * t), Math.round(90 - 80 * t)],
-  alpha: 210,
-  flicker: 1,
-  windDrag: 0.35,
-  weightExp: 3,
+  riseM: 18,
+  life: [2.6, 5.2],
+  radius: [2.8, 7],
+  // arancio saturo -> rosso fuoco vivo: deve staccare ANCHE sul foglio
+  // temperatura giallo-arancio, non solo sulla basemap scura.
+  color: (t) => [
+    Math.round(255 - 45 * t),
+    Math.round(170 - 130 * t),
+    Math.round(60 - 50 * t),
+  ],
+  alpha: 185,
+  flicker: 0.55,
+  windDrag: 0.65,
+  weightExp: 1.8,
+  swirl: 5,
 }
 
 /** Preset FOSCHIA sull'umidita' relativa: aloni chiari, lenti, dove e' umido. */
 export const EMBER_MIST: Omit<EmberOptions, 'count'> = {
   threshold: 42, // % UR: sopra la mediana del dominio
   vmax: 50,
-  riseM: 3,
-  life: [4, 8],
-  radius: [3.5, 7],
+  riseM: 4,
+  life: [5, 9],
+  radius: [7, 14],
   color: () => [195, 225, 255],
-  alpha: 46,
+  alpha: 28,
   flicker: 0,
   windDrag: 0.5,
   weightExp: 1.5,
+  swirl: 1.5,
 }
 
 export class Embers {
@@ -491,10 +291,13 @@ export class Embers {
   private age: Float32Array
   private life: Float32Array
   private phase: Float32Array
-  // Buffer binari per ScatterplotLayer.
+  // Buffer binari per IconLayer (sprite di fumo billboard).
   readonly posBuf: Float64Array
   readonly colBuf: Uint8Array
-  readonly radBuf: Float32Array
+  /** DIAMETRO dello sprite in metri (getSize dell'IconLayer). */
+  readonly sizeBuf: Float32Array
+  /** Rotazione dello sprite in gradi (getAngle): il fumo "gira" lento. */
+  readonly angBuf: Float32Array
   readonly count: number
   /** false se nessuna cella supera la soglia (niente da mostrare). */
   readonly active: boolean
@@ -544,7 +347,8 @@ export class Embers {
     this.phase = new Float32Array(n)
     this.posBuf = new Float64Array(n * 3)
     this.colBuf = new Uint8Array(n * 4)
-    this.radBuf = new Float32Array(n)
+    this.sizeBuf = new Float32Array(n)
+    this.angBuf = new Float32Array(n)
     for (let i = 0; i < n; i++) {
       this.respawn(i)
       // Eta' iniziale casuale: il sistema parte gia' "a regime".
@@ -579,7 +383,7 @@ export class Embers {
     for (let i = 0; i < this.count; i++) {
       this.age[i] += dt
       if (this.age[i] > this.life[i]) this.respawn(i)
-      // Trascinamento del vento (le fiamme "piegano", la foschia deriva).
+      // Trascinamento del vento (il fumo "piega" e scorre lungo la strada).
       if (this.wind && o.windDrag > 0) {
         const w = this.wind.at(this.frame, this.pu[i], this.pv[i])
         if (w) {
@@ -587,10 +391,23 @@ export class Embers {
             w[0] * o.windDrag * WIND_SPEED_SCALE * 0.4,
             w[1] * o.windDrag * WIND_SPEED_SCALE * 0.4,
           )
-          this.pu[i] = Math.min(0.999, Math.max(0, this.pu[i] + du * dt))
-          this.pv[i] = Math.min(0.999, Math.max(0, this.pv[i] + dv * dt))
+          this.pu[i] += du * dt
+          this.pv[i] += dv * dt
         }
       }
+      // Turbolenza: deriva orizzontale pseudo-casuale per particella, cosi' il
+      // fumo billowa invece di salire in colonna (fase = seme individuale).
+      if (o.swirl > 0) {
+        const ang = this.phase[i] * 3.7 + nowS * (0.5 + 0.4 * Math.sin(this.phase[i]))
+        const [du, dv] = this.frame.velToUV(
+          Math.cos(ang) * o.swirl,
+          Math.sin(ang * 1.31 + this.phase[i]) * o.swirl,
+        )
+        this.pu[i] += du * dt
+        this.pv[i] += dv * dt
+      }
+      this.pu[i] = Math.min(0.999, Math.max(0, this.pu[i]))
+      this.pv[i] = Math.min(0.999, Math.max(0, this.pv[i]))
       const l = this.age[i] / this.life[i] // vita normalizzata 0..1
       const t = this.pt[i]
       const [lon, lat] = this.frame.lonLat(this.pu[i], this.pv[i])
@@ -609,8 +426,43 @@ export class Embers {
       this.colBuf[i * 4 + 1] = g
       this.colBuf[i * 4 + 2] = b
       this.colBuf[i * 4 + 3] = Math.max(0, Math.min(255, Math.round(a)))
-      this.radBuf[i] =
-        o.radius[0] + (o.radius[1] - o.radius[0]) * (0.3 + 0.7 * t) * (0.6 + 0.4 * l)
+      // Il fumo NASCE piccolo e si GONFIA salendo (diametro = 2 * raggio).
+      this.sizeBuf[i] =
+        2 *
+        (o.radius[0] +
+          (o.radius[1] - o.radius[0]) * (0.3 + 0.7 * t) * (0.35 + 0.85 * l))
+      // Rotazione lenta, meta' orarie e meta' antiorarie (segno dalla fase).
+      this.angBuf[i] =
+        (this.phase[i] * 57.3 + nowS * 14 * (this.phase[i] > Math.PI ? 1 : -1)) % 360
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sprite del fumo (atlas per IconLayer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Blob radiale soffice usato come sprite billboard dal fumo/foschia: bianco al
+ * centro che sfuma a trasparente (mask: il colore vero arriva da getColor).
+ * Due lobi leggermente sfalsati rompono la simmetria perfetta del gradiente,
+ * cosi' gli sprite ruotati non sembrano tutti la stessa "palla".
+ */
+export function makeSmokeSprite(size = 128): HTMLCanvasElement {
+  const c = document.createElement('canvas')
+  c.width = size
+  c.height = size
+  const ctx = c.getContext('2d')!
+  const blob = (cx: number, cy: number, r: number, aMax: number) => {
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
+    g.addColorStop(0, `rgba(255,255,255,${aMax})`)
+    g.addColorStop(0.45, `rgba(255,255,255,${aMax * 0.55})`)
+    g.addColorStop(1, 'rgba(255,255,255,0)')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, size, size)
+  }
+  blob(size * 0.5, size * 0.5, size * 0.5, 0.85)
+  blob(size * 0.38, size * 0.42, size * 0.3, 0.5)
+  blob(size * 0.62, size * 0.58, size * 0.26, 0.45)
+  return c
 }
