@@ -81,6 +81,9 @@ deploy. URL pubblico: https://dclfbk.github.io/UrbanScope3D/
   commento che motiva il valore.
 - Tipi definiti nel file che li consuma (niente `types.ts` condiviso).
 - Import assoluti `@/lib/...`, `@/components/...`.
+- **Per modifiche alla UI leggere `web/DESIGN.md`**: palette Talea, ricetta
+  pannello, stili bottoni e regole animazioni (con l'elenco dei debiti di
+  stile da non propagare).
 
 ## File chiave
 

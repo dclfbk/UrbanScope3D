@@ -68,8 +68,10 @@
 /web/public/data/processed/envimet/wind_uv.values.json
 /docs/data/processed/envimet/wind_uv.values.json
 
-# Claude Code locale
-.claude/
+# Claude Code: locale (permessi) ignorato, ma i comandi slash di progetto
+# (.claude/commands/) si versionano perche' codificano i flussi del repo
+.claude/*
+!.claude/commands/
 
 # Riferimenti visivi personali per il 3D (video + appunti), non per il repo
 /materialePer3D/
