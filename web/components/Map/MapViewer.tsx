@@ -14,7 +14,6 @@ import {
 import {
   GeoJsonLayer,
   IconLayer,
-  LineLayer,
   ScatterplotLayer,
   TextLayer,
 } from '@deck.gl/layers'
@@ -63,7 +62,6 @@ import TimeSlider from '@/components/UI/TimeSlider'
 import InfoPanel from '@/components/UI/InfoPanel'
 import MeteoWidget from '@/components/UI/MeteoWidget'
 import { withBase } from '@/lib/basePath'
-import { Soundscape, type SoundMix } from '@/lib/soundscape'
 import {
   BOLOGNA_FOREST_DARK,
   BOLOGNA_OCRA,
@@ -1007,6 +1005,10 @@ const QUARTIERE_BLOCK_HEIGHT = 80 // m, altezza del blocco pseudo-3D
 const QUARTIERE_BLOCK_COLOR = withAlpha(BOLOGNA_RED, 130)
 const QUARTIERE_LINE_COLOR = withAlpha(BOLOGNA_RED, 230)
 
+// Non più agganciata alla pipeline (l'highlight 3D del quartiere è stato
+// tolto in favore del bordo lampeggiante): conservata come tentativo
+// documentato — materiale per la tesi, vedi CLAUDE.md.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function buildSelectedQuartiereLayer(
   quartieri: QuartiereFeature[] | null,
   selectedCodQuar: number | null,
@@ -2031,11 +2033,6 @@ const HELP_INFO: Record<
     text: ['Nascondi i pannelli, scarica uno screenshot 3D, condividi o apri il meteo.', 'Hide panels, download a 3D screenshot, share or open the weather.'],
     side: 'above',
   },
-  sound: {
-    label: ['Suoni della zona', 'Area soundscape'],
-    text: ['Ascolta la zona microclima: il verde cinguetta e resta calmo, le strade trafficate ronzano. Clicca un punto per ascoltarlo.', 'Listen to the microclimate area: greenery chirps and stays calm, busy streets hum. Click a spot to hear it.'],
-    side: 'above',
-  },
 }
 
 type MapViewerProps = {
@@ -2181,20 +2178,9 @@ export default function MapViewer({
   // air_temp dell'edificio sotto l'ultimo click (null = nessun edificio o fuori
   // dominio ENVI-met). Usato dal pannello del punto in modalita' temperatura.
   const probeBuildingTempRef = useRef<number | null>(null)
-  // Valori campionati al punto cliccato, derivati da `probe` + overlay
-  // microclima ENVI-met spuntati.
-  const [pointEnv, setPointEnv] = useState<
-    { key: string; label: string; unit: string; value: number | null }[]
-  >([])
-  // Profilo VERTICALE (54 quote) della variabile attiva al punto cliccato:
-  // reso in InfoPanel come colonnina colorata. Possibile solo ora che il cubo
-  // GeoTIFF completo sta in memoria nel browser.
-  const [pointProfile, setPointProfile] = useState<{
-    def: EnvimetVarDef
-    points: { zM: number; v: number | null }[]
-    vmin: number
-    vmax: number
-  } | null>(null)
+  // (I valori al punto cliccato e il profilo verticale sono ora DERIVATI con
+  // useMemo più sotto — vedi `pointEnv` / `pointProfile`: lettura pura dai
+  // cubi in memoria, niente stato + effect.)
   // Cubi ENVI-met: `envCubeTick` scatta quando un cubo GeoTIFF finisce di
   // decodificare (ritriggera memo/effect che leggono getCubeSync);
   // `envLoading` guida l'indicatore di avanzamento accanto al toggle.
@@ -2207,10 +2193,10 @@ export default function MapViewer({
   // Stazioni qualita' aria (marker DOM, sempre sopra agli edifici 3D).
   const [airStations, setAirStations] = useState<AirStation[] | null>(null)
   const airMarkersRef = useRef<maplibregl.Marker[]>([])
-  // Rumore: tooltip che segue il mouse + audio Web Audio (hiss proporzionale
-  // ai dB della strada sotto al cursore).
+  // Rumore: tooltip con i dB che segue il mouse sulla strada. (L'hiss Web
+  // Audio proporzionale ai dB è stato RIMOSSO il 17/08/2026: suonava anche a
+  // suoni spenti e infastidiva — richiesta utente/prof.)
   const noiseTipRef = useRef<maplibregl.Popup | null>(null)
-  const audioRef = useRef<{ ctx: AudioContext; gain: GainNode } | null>(null)
   // Parto SUBITO dal file con le altezze (esiste): gli edifici 3D giusti si
   // caricano dall'inizio, senza il flash del footprint piatto (z=0, sepolto
   // sotto il terreno). Se il file processato mancasse, si ripiega sul footprint.
@@ -2434,13 +2420,9 @@ export default function MapViewer({
   const [meteoOpen, setMeteoOpen] = useState(false)
   // Toast "link copiato" dopo il fallback di condivisione su desktop.
   const [shareToast, setShareToast] = useState(false)
-  // Paesaggio sonoro (Web Audio sintetizzato, vedi lib/soundscape.ts): ON/OFF +
-  // motore audio (ref). Suona SOLO nella zona microclima; il mix dei suoni
-  // (uccelli/traffico/vento) è deciso dai dati sotto il punto (computeSoundMix).
-  const [soundOn, setSoundOn] = useState(false)
-  const soundRef = useRef<Soundscape | null>(null)
-  // Etichetta di cosa stai ascoltando (verde/strada/…); null = fuori zona.
-  const [soundLabel, setSoundLabel] = useState<string | null>(null)
+  // (Il paesaggio sonoro sintetizzato — lib/soundscape.ts — e il bottone
+  // "Suoni della zona" sono stati RIMOSSI il 17/08/2026 su richiesta; il
+  // motore resta nel repo come materiale di tesi.)
   const [quartieri, setQuartieri] = useState<QuartiereFeature[] | null>(null)
   const [selectedQuartiere, setSelectedQuartiere] = useState<number | null>(
     null,
@@ -2458,12 +2440,15 @@ export default function MapViewer({
   const [techOpen, setTechOpen] = useState(false)
   // Banner di benvenuto (mostrato una volta sola, poi ricordato in
   // localStorage). Guida il cittadino: scegli un dato, clicca sulla mappa.
-  const [showIntro, setShowIntro] = useState(false)
-  useEffect(() => {
+  // Initializer pigro: MapViewer e' montato solo client-side (dynamic
+  // ssr:false), quindi localStorage e' sempre disponibile al primo render.
+  const [showIntro, setShowIntro] = useState(() => {
     try {
-      if (!localStorage.getItem('us3d_intro_seen')) setShowIntro(true)
-    } catch {}
-  }, [])
+      return !localStorage.getItem('us3d_intro_seen')
+    } catch {
+      return true
+    }
+  })
   const dismissIntro = () => {
     setShowIntro(false)
     try {
@@ -2479,10 +2464,7 @@ export default function MapViewer({
   // tratteggiato + una card che spiega cosa fa (vedi HELP_INFO e l'overlay).
   const [helpRects, setHelpRects] = useState<{ key: string; rect: DOMRect }[]>([])
   useEffect(() => {
-    if (!helpOpen) {
-      setHelpRects([])
-      return
-    }
+    if (!helpOpen) return // l'overlay non e' renderizzato: rect stantii innocui
     const measure = () => {
       const els = Array.from(
         document.querySelectorAll<HTMLElement>('[data-help]'),
@@ -2496,15 +2478,34 @@ export default function MapViewer({
       }
       setHelpRects(out)
     }
-    measure()
-    // Ri-misura dopo che i pannelli si sono disposti e a ogni resize.
-    const t = setTimeout(measure, 80)
+    // Misura SOLO in timeout (niente setState sincrono nell'effect): subito
+    // dopo il commit e di nuovo quando i pannelli si sono disposti.
+    const t0 = setTimeout(measure, 0)
+    const t1 = setTimeout(measure, 120)
     window.addEventListener('resize', measure)
     return () => {
-      clearTimeout(t)
+      clearTimeout(t0)
+      clearTimeout(t1)
       window.removeEventListener('resize', measure)
     }
-  }, [helpOpen, lang])
+    // L'overlay e' pointer-events-none: l'utente puo' aprire/chiudere pannelli
+    // MENTRE l'aiuto e' attivo. Ogni stato che sposta o mostra/nasconde un
+    // comando marcato data-help sta nelle deps, cosi' contorni e card seguono
+    // la UI reale invece di restare sulla foto scattata all'apertura.
+  }, [
+    helpOpen,
+    lang,
+    layerPanelOpen,
+    zonePanelOpen,
+    basemapOpen,
+    collapsed,
+    probe,
+    visibility,
+    envVisible,
+    searchResults,
+    selectedQuartiere,
+    uiHidden,
+  ])
   // Overlay microclima attivo come foglio 3D (SimpleMeshLayer texturizzata) o
   // null. Il DATO viene dal cubo GeoTIFF decodificato nel browser: qui si
   // prende la slice della quota dello slider e la si COLORA client-side
@@ -2536,6 +2537,8 @@ export default function MapViewer({
     // Quota (m sul suolo) della banda scelta: il foglio sale a questa altezza.
     const zM = def.agg === 'band' ? (cube.zM[zIdx] ?? 1.5) : 1.5
     return { def, cube, image, values, zIdx, zM, groundAt: envGroundAt }
+    // envCubeTick: i cubi arrivano fuori da React, il tick invalida il memo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [envVisible, envHeightBand, envCubeTick])
 
   // Mesh del foglio microclima che SEGUE IL TERRENO (vedi buildEnvSheetMesh):
@@ -2763,13 +2766,21 @@ export default function MapViewer({
     if (visibility['buildings-temp']) wanted.add('mean_radiant_temp')
     for (const key of wanted) {
       if (getCubeSync(key)) continue
-      setEnvLoading((s) => (key in s ? s : { ...s, [key]: { loaded: 0, total: 0 } }))
+      // Seed dell'indicatore in microtask (niente setState sincrono
+      // nell'effect); arriva comunque prima del primo progress della fetch.
+      queueMicrotask(() =>
+        setEnvLoading((s) =>
+          key in s ? s : { ...s, [key]: { loaded: 0, total: 0 } },
+        ),
+      )
       loadCube(key, (loaded, total) =>
         setEnvLoading((s) => ({ ...s, [key]: { loaded, total } })),
       )
         .then(() => {
           setEnvLoading((s) => {
-            const { [key]: _drop, ...rest } = s
+            if (!(key in s)) return s
+            const rest = { ...s }
+            delete rest[key]
             return rest
           })
           setEnvCubeTick((t) => t + 1)
@@ -2784,15 +2795,9 @@ export default function MapViewer({
 
   // Deriva i valori al punto cliccato dai layer attivi + cubi pronti, e il
   // PROFILO VERTICALE completo (tutte le 54 quote) della variabile attiva:
-  // col cubo in memoria "il valore a ogni quota" e' una lettura gratis.
-  useEffect(() => {
-    if (!probe) {
-      setPointEnv([])
-      setPointProfile(null)
-      return
-    }
-    const { lat, lon } = probe
-    const frame = envFrame()
+  // col cubo in memoria "il valore a ogni quota" e' una lettura gratis, quindi
+  // sono useMemo (derivazione pura), non stato aggiornato da un effect.
+  const activeProbeOverlays = useMemo<EnvimetVarDef[]>(() => {
     const active = ENV_OVERLAYS.filter((o) => envVisible[o.key])
     // Se 'Edifici -> temperatura' e' attivo, mostra comunque la temperatura
     // percepita (MRT) al punto cliccato (anche con l'overlay raster spento):
@@ -2803,6 +2808,14 @@ export default function MapViewer({
         active.unshift(mrtDef)
       }
     }
+    return active
+  }, [envVisible, visibility])
+  const pointEnv = useMemo<
+    { key: string; label: string; unit: string; value: number | null }[]
+  >(() => {
+    if (!probe) return []
+    const { lat, lon } = probe
+    const frame = envFrame()
     const sample = (o: EnvimetVarDef): number | null => {
       const cube = getCubeSync(o.key)
       if (!cube) return null
@@ -2815,34 +2828,62 @@ export default function MapViewer({
       const x = frame.sample(grid, u, v)
       return x == null ? null : Math.round(x * 10) / 10
     }
-    setPointEnv(
-      active.map((o) => ({
-        key: o.key,
-        label: envLabel(o, lang),
-        unit: o.unit,
-        // Per la MRT preferisco quella dell'edificio cliccato (esatta, = colore
-        // dell'edificio); altrimenti campiono il cubo alla quota dello slider.
-        value:
-          o.key === 'mean_radiant_temp' && probeBuildingTempRef.current != null
-            ? probeBuildingTempRef.current
-            : sample(o),
-      })),
-    )
-    // Profilo verticale della prima variabile attiva con dimensione z.
-    const profDef = active.find((o) => o.agg === 'band')
+    return activeProbeOverlays.map((o) => ({
+      key: o.key,
+      label: envLabel(o, lang),
+      unit: o.unit,
+      // Per la MRT preferisco quella dell'edificio cliccato (esatta, = colore
+      // dell'edificio); altrimenti campiono il cubo alla quota dello slider.
+      value:
+        o.key === 'mean_radiant_temp' && probeBuildingTempRef.current != null
+          ? probeBuildingTempRef.current
+          : sample(o),
+    }))
+    // envCubeTick: i cubi arrivano fuori da React, il tick invalida il memo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [probe, activeProbeOverlays, envCubeTick, envHeightBand, lang])
+  // Profilo verticale della prima variabile attiva con dimensione z.
+  const pointProfile = useMemo<{
+    def: EnvimetVarDef
+    points: { zM: number; v: number | null }[]
+    vmin: number
+    vmax: number
+  } | null>(() => {
+    if (!probe) return null
+    const profDef = activeProbeOverlays.find((o) => o.agg === 'band')
     const profCube = profDef ? getCubeSync(profDef.key) : null
-    if (profDef && profCube) {
-      const prof = verticalProfile(profCube, lon, lat)
-      const [vmin, vmax] = cubeRange(profCube)
-      setPointProfile(
-        prof.some((p) => p.v != null)
-          ? { def: profDef, points: prof, vmin, vmax }
-          : null,
-      )
-    } else {
-      setPointProfile(null)
+    if (!profDef || !profCube) return null
+    const prof = verticalProfile(profCube, probe.lon, probe.lat)
+    const [vmin, vmax] = cubeRange(profCube)
+    return prof.some((p) => p.v != null)
+      ? { def: profDef, points: prof, vmin, vmax }
+      : null
+    // envCubeTick: come sopra, invalida il memo quando un cubo finisce.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [probe, activeProbeOverlays, envCubeTick])
+
+  // Range colore di 'Edifici -> temperatura': percentili 5-95 delle MRT
+  // pedonali DEGLI EDIFICI stessi. Prima si usava il min/max dell'intero cubo
+  // (tutte le 54 quote, outlier compresi): gli edifici occupavano solo un
+  // pezzo della rampa e sembravano tutti uguali/saturi. Sul range reale delle
+  // case le differenze sole/ombra si vedono. Fallback 20-80 (registry) finche'
+  // il GeoJSON non e' pronto.
+  const mrtBuildingsRange = useMemo<{ min: number; max: number } | null>(() => {
+    if (!visibility['buildings-temp']) return null
+    const fc = buildingsData as { features?: BuildingFeature[] } | null
+    const vals: number[] = []
+    if (fc && Array.isArray(fc.features)) {
+      for (const f of fc.features) {
+        const v = pedestrianMrt(f.properties?.mrt_col)
+        if (v != null) vals.push(v)
+      }
     }
-  }, [probe, visibility, envVisible, envCubeTick, envHeightBand, lang])
+    if (vals.length < 10) return { min: 20, max: 80 }
+    vals.sort((a, b) => a - b)
+    const q = (p: number) =>
+      vals[Math.min(vals.length - 1, Math.round(p * (vals.length - 1)))]
+    return { min: q(0.05), max: q(0.95) }
+  }, [visibility, buildingsData])
 
   // Marker DOM delle stazioni qualita' aria (sempre sopra agli edifici 3D,
   // che con deck.gl occluderebbero i cerchi MapLibre). Click -> popup con le
@@ -3375,41 +3416,9 @@ export default function MapViewer({
         setProbe({ lat: e.lngLat.lat, lon: e.lngLat.lng })
       })
 
-      // Rumore: hover su una strada -> tooltip con i dB + hiss audio
-      // proporzionale (Web Audio). L'AudioContext si crea/riprende solo
-      // all'hover (serve un gesto utente per la policy autoplay).
-      const ensureNoiseAudio = () => {
-        if (audioRef.current) return audioRef.current
-        try {
-          const Ctx =
-            window.AudioContext ||
-            (window as unknown as { webkitAudioContext: typeof AudioContext })
-              .webkitAudioContext
-          const ctx = new Ctx()
-          const n = 2 * ctx.sampleRate
-          const buffer = ctx.createBuffer(1, n, ctx.sampleRate)
-          const ch = buffer.getChannelData(0)
-          let last = 0
-          for (let i = 0; i < n; i++) {
-            const white = Math.random() * 2 - 1
-            last = (last + 0.02 * white) / 1.02 // rumore "rosa" approssimato
-            ch[i] = last * 3.5
-          }
-          const src = ctx.createBufferSource()
-          src.buffer = buffer
-          src.loop = true
-          const gain = ctx.createGain()
-          gain.gain.value = 0
-          src.connect(gain)
-          gain.connect(ctx.destination)
-          src.start(0)
-          audioRef.current = { ctx, gain }
-        } catch {
-          return null
-        }
-        return audioRef.current
-      }
-
+      // Rumore: hover su una strada -> tooltip con i dB. (L'hiss Web Audio
+      // proporzionale ai dB è stato RIMOSSO il 17/08/2026: partiva all'hover
+      // fuori da ogni toggle e infastidiva.)
       map.on('mousemove', 'noise', (e) => {
         const f = e.features?.[0]
         if (!f) return
@@ -3428,18 +3437,10 @@ export default function MapViewer({
             `<div style="font:600 12px ui-monospace,monospace;color:#111;">${db} dB</div>`,
           )
           .addTo(map)
-        const a = ensureNoiseAudio()
-        if (a) {
-          if (a.ctx.state === 'suspended') a.ctx.resume()
-          const g = Math.max(0, Math.min(1, (db - 42) / 36)) * 0.32
-          a.gain.gain.setTargetAtTime(g, a.ctx.currentTime, 0.05)
-        }
       })
       map.on('mouseleave', 'noise', () => {
         map.getCanvas().style.cursor = ''
         noiseTipRef.current?.remove()
-        const a = audioRef.current
-        if (a) a.gain.gain.setTargetAtTime(0, a.ctx.currentTime, 0.1)
       })
 
       const syncBearing = () => setBearing(map.getBearing())
@@ -3464,8 +3465,6 @@ export default function MapViewer({
       arredoPopupRef.current = null
       if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
       if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-      audioRef.current?.ctx.close().catch(() => {})
-      audioRef.current = null
       map.remove()
       mapRef.current = null
       overlayRef.current = null
@@ -3564,18 +3563,10 @@ export default function MapViewer({
       if (overlay && overlayReadyRef.current) {
         // Se 'buildings-temp' e' attivo, coloro ogni edificio per la sua MRT
         // pedonale (temperatura percepita ~1.5 m, campionata da ENVI-met dalla
-        // pipeline in mrt_col) normalizzata sul range osservato. Spaziale:
-        // edifici dentro al dominio ENVI-met colorati giallo->rosso, gli altri
-        // grigi. Range REALE osservato (non il fisso 20-80) cosi' la rampa si
-        // usa tutta e le case "che scottano" si distinguono.
-        let mrtRange: { min: number; max: number } | null = null
-        if (visibility['buildings-temp']) {
-          // Range osservato dal cubo MRT (min/max reali), fallback al fisso.
-          const mrtCube = getCubeSync('mean_radiant_temp')
-          mrtRange = mrtCube
-            ? { min: mrtCube.min, max: mrtCube.max }
-            : { min: 20, max: 80 }
-        }
+        // pipeline in mrt_col) normalizzata sui percentili 5-95 degli edifici
+        // stessi (vedi mrtBuildingsRange). Spaziale: edifici dentro al dominio
+        // ENVI-met colorati giallo->rosso, gli altri grigi.
+        const mrtRange = mrtBuildingsRange
         // Luce: aggiorno sole/ambient con l'ora. castShadows = stato del toggle
         // "Ombre" (l'overlay e' stato creato/ricreato con _shadow coerente, vedi
         // effect "ricrea overlay al cambio ombre"), quindi nessuna ricompilazione.
@@ -3638,10 +3629,12 @@ export default function MapViewer({
                   parameters: { depthCompare: 'less-equal' },
                 })
               : null,
-            // Pallino PIATTO del punto cliccato, posato SUL foglio microclima
-            // (alla sua quota): così torna "sul pannello" anche ora che il foglio
-            // è sollevato (il marker DOM resterebbe sul terreno, sotto). depthTest
-            // off = sempre visibile sul foglio.
+            // Pallino PIATTO del punto cliccato, ANCORATO AL TERRENO (il marker
+            // DOM sparisce quando c'è un foglio microclima). Resta fermo quando
+            // lo slider quota solleva il foglio: il punto indica DOVE hai
+            // cliccato, non la quota che stai guardando (prima saliva col
+            // foglio e disorientava — richiesta utente 17/08/2026). depthTest
+            // off = visibile anche attraverso il foglio.
             probe && envSlice
               ? new ScatterplotLayer<[number, number, number]>({
                   id: 'env-probe-dot',
@@ -3649,12 +3642,10 @@ export default function MapViewer({
                     [
                       probe.lon,
                       probe.lat,
-                      // Sul foglio: quota terreno REALE al punto + quota banda.
+                      // Quota terreno REALE al punto (+0.5 m anti z-fighting).
                       (envSheet
                         ? envSheet.elevAt(probe.lon, probe.lat)
-                        : envSlice.groundAt(probe.lon, probe.lat)) +
-                        envSlice.zM +
-                        0.5,
+                        : envSlice.groundAt(probe.lon, probe.lat)) + 0.5,
                     ],
                   ],
                   getPosition: (d) => d,
@@ -3748,6 +3739,8 @@ export default function MapViewer({
     fadeCenter,
     probe,
     envSlice,
+    envSheet,
+    mrtBuildingsRange,
     // envCubeTick: il range MRT degli edifici legge il cubo appena caricato.
     envCubeTick,
     // liveOn: il foglio microclima cambia opacita' quando il "vivo" e' acceso.
@@ -3781,7 +3774,6 @@ export default function MapViewer({
       if (basemap === 'dark') whitenMapLabels(map)
       map.once('idle', () => raiseMapLabels(map))
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basemap])
 
   const resetNorth = () => {
@@ -3940,22 +3932,27 @@ export default function MapViewer({
       return
     }
     const q = search.trim()
-    if (q.length < 2) {
-      setSearchResults([])
-      return
-    }
-    const quartieriHits = matchQuartieri(q)
     const ctrl = new AbortController()
     // Debounce breve (Photon non ha il limite ~1 req/s di Nominatim) + abort
-    // della richiesta precedente a ogni tasto -> suggerimenti reattivi.
-    const handle = setTimeout(async () => {
-      try {
-        const addresses = await geocodeBologna(q, lang, ctrl.signal)
-        setSearchResults([...quartieriHits, ...addresses])
-      } catch {
-        if (!ctrl.signal.aborted) setSearchResults(quartieriHits)
-      }
-    }, 250)
+    // della richiesta precedente a ogni tasto -> suggerimenti reattivi. Anche
+    // lo svuotamento (query troppo corta) passa dal timeout: niente setState
+    // sincrono nel corpo dell'effect.
+    const handle = setTimeout(
+      async () => {
+        if (q.length < 2) {
+          setSearchResults([])
+          return
+        }
+        const quartieriHits = matchQuartieri(q)
+        try {
+          const addresses = await geocodeBologna(q, lang, ctrl.signal)
+          setSearchResults([...quartieriHits, ...addresses])
+        } catch {
+          if (!ctrl.signal.aborted) setSearchResults(quartieriHits)
+        }
+      },
+      q.length < 2 ? 0 : 250,
+    )
     return () => {
       ctrl.abort()
       clearTimeout(handle)
@@ -4062,143 +4059,9 @@ export default function MapViewer({
     }
   }
 
-  // ── Paesaggio sonoro: decide il MIX dei suoni dal dato sotto il punto ────────
-  // Solo dentro la ZONA MICROCLIMA (bounds dell'overlay ENVI-met). Verde =
-  // uccelli e calma; strade rumorose (dato `noise`) = traffico; un filo di vento.
-  const computeSoundMix = (
-    lon: number,
-    lat: number,
-  ): { mix: SoundMix; label: string } | null => {
-    const map = mapRef.current
-    if (!map) return null
-    const [west, south, east, north] = ENV_BOUNDS
-    if (lon < west || lon > east || lat < south || lat > north) {
-      return null // fuori dalla zona microclima -> silenzio
-    }
-    const pt = map.project([lon, lat])
-    // Verde: il punto è dentro un'area verde renderizzata?
-    let green = false
-    try {
-      green =
-        map.queryRenderedFeatures(pt, { layers: ['green-areas'] }).length > 0
-    } catch {}
-    // Traffico: massimo noise_db delle strade vicine (~45 m), dalla source
-    // 'noise' (querySourceFeatures funziona anche se il layer non è visibile).
-    let db = 0
-    try {
-      const feats = map.querySourceFeatures('noise')
-      const mLat = 110540
-      const mLon = 111320 * Math.cos((lat * Math.PI) / 180)
-      for (const f of feats) {
-        const val = Number(
-          (f.properties as { noise_db?: number } | null)?.noise_db ?? 0,
-        )
-        if (!(val > db)) continue
-        const g = f.geometry as {
-          type: string
-          coordinates: number[][] | number[][][]
-        }
-        const lines =
-          g.type === 'LineString'
-            ? [g.coordinates as number[][]]
-            : g.type === 'MultiLineString'
-              ? (g.coordinates as number[][][])
-              : []
-        let near = false
-        for (const line of lines) {
-          for (const c of line) {
-            const dx = (c[0] - lon) * mLon
-            const dy = (c[1] - lat) * mLat
-            if (dx * dx + dy * dy < 45 * 45) {
-              near = true
-              break
-            }
-          }
-          if (near) break
-        }
-        if (near) db = val
-      }
-    } catch {}
-    const traffic = db > 0 ? Math.max(0, Math.min(1, (db - 52) / (78 - 52))) : 0
-    const birds = green ? 0.9 : Math.max(0, 0.28 - traffic * 0.25)
-    const mix: SoundMix = {
-      traffic: 0.05 + traffic * 0.32,
-      birds,
-      wind: green ? 0.12 : 0.07,
-    }
-    const it = lang === 'it'
-    const label =
-      traffic > 0.45
-        ? it
-          ? 'strada trafficata'
-          : 'busy street'
-        : green
-          ? it
-            ? 'verde, tranquillo'
-            : 'greenery, calm'
-          : it
-            ? 'tessuto urbano'
-            : 'urban fabric'
-    return { mix, label }
-  }
-
-  const toggleSound = () => {
-    if (soundOn) {
-      soundRef.current?.stop()
-      soundRef.current = null
-      setSoundOn(false)
-      setSoundLabel(null)
-      return
-    }
-    const s = new Soundscape()
-    s.start() // gesto utente: ok per le policy di autoplay
-    s.resume()
-    soundRef.current = s
-    setSoundOn(true)
-  }
-
-  // Aggiorna il mix quando i suoni sono attivi e cambia il punto di ascolto
-  // (click = probe, altrimenti centro vista) o a fine spostamento mappa.
-  useEffect(() => {
-    if (!soundOn) return
-    const map = mapRef.current
-    const update = () => {
-      const s = soundRef.current
-      if (!s) return
-      let lon: number
-      let lat: number
-      if (probe) {
-        lon = probe.lon
-        lat = probe.lat
-      } else if (map) {
-        const c = map.getCenter()
-        lon = c.lng
-        lat = c.lat
-      } else return
-      const res = computeSoundMix(lon, lat)
-      if (res) {
-        s.setMix(res.mix)
-        setSoundLabel(res.label)
-      } else {
-        s.setMix({ traffic: 0, birds: 0, wind: 0 })
-        setSoundLabel(null)
-      }
-    }
-    update()
-    map?.on('moveend', update)
-    return () => {
-      map?.off('moveend', update)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soundOn, probe, envHeightBand, lang])
-
-  // Ferma l'audio allo smontaggio del componente.
-  useEffect(() => {
-    return () => {
-      soundRef.current?.stop()
-      soundRef.current = null
-    }
-  }, [])
+  // (Qui viveva il "paesaggio sonoro" — computeSoundMix + toggle + effect di
+  //  aggiornamento del mix: rimosso il 17/08/2026 su richiesta. Il motore
+  //  audio resta in lib/soundscape.ts come materiale di tesi.)
 
   // Frazione 0..1 del download edifici (byte realmente letti / stima), bloccata
   // a 0.99 finche' il parse non e' concluso (vedi BUILDINGS_BYTES_EST).
@@ -4446,14 +4309,16 @@ export default function MapViewer({
       </button>
 
       {/* Toggle pannello Zone, a fianco (destra) della barra di ricerca. Il
-          `left` e' calcolato dal bordo destro della search bar centrata
-          (meta' larghezza = min(210px,40vw)) + un gap. */}
+          gruppo centrato e' [bottone basemap 42px + gap 8px + colonna ricerca
+          min(420px,80vw)]: il suo bordo destro sta a
+          50% + min(210px,40vw) + 25px (la meta' di bottone+gap). Il vecchio
+          calc ometteva quei 25px e il toggle finiva ATTACCATO alla barra. */}
       {quartieri && (
         <button
           type="button"
           onClick={() => setZonePanelOpen((v) => !v)}
           title={zonePanelOpen ? t('hideZones', lang) : t('showZones', lang)}
-          style={{ left: 'calc(50% + min(210px, 40vw) + 1.5rem)' }}
+          style={{ left: 'calc(50% + min(210px, 40vw) + 25px + 0.75rem)' }}
           className="absolute top-4 z-20 px-2.5 py-2 rounded bg-talea-panel/90 border border-talea-400/30 backdrop-blur-sm shadow-xl text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
           aria-label="Toggle zone panel"
         >
@@ -4472,7 +4337,7 @@ export default function MapViewer({
       {/* Pannello Zone (collassabile), sotto il toggle accanto alla search. */}
       {quartieri && zonePanelOpen && (
         <div
-          style={{ left: 'calc(50% + min(210px, 40vw) + 1.5rem)' }}
+          style={{ left: 'calc(50% + min(210px, 40vw) + 25px + 0.75rem)' }}
           className="absolute top-16 z-10 bg-talea-panel/85 border border-talea-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl max-w-[60vw] sm:max-w-[200px]"
         >
           <div className="flex flex-col gap-1">
@@ -4763,8 +4628,10 @@ export default function MapViewer({
         const idx = Math.min(envHeightBand, cube.nz - 1)
         const zLabel = (b: number) => Math.round(cube.zM[b] * 10) / 10
         return (
-          // A DESTRA (centrata in verticale), come richiesto. Compatta.
-          <div className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1.5 bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl" data-help="height">
+          // A DESTRA (centrata in verticale), ma su desktop SPOSTATA a
+          // sinistra della colonna InfoPanel/legenda (larga 260px a right-4):
+          // prima stava sopra ai pannelli e li copriva a metà altezza.
+          <div className="absolute right-2 sm:right-[calc(min(260px,100vw-1rem)+1.5rem)] top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1.5 bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl" data-help="height">
             <div className="text-talea-400 text-[10px] font-mono uppercase tracking-widest">
               {lang === 'it' ? 'Quota' : 'Height'}
             </div>
@@ -5330,12 +5197,9 @@ export default function MapViewer({
         const showNoise = visibility['noise']
         const showLegend = activeEnv.length > 0 || showBuildingTemp || showNoise
         if (!probe && !showLegend) return null
-        // Range osservato del cubo MRT per la legenda edifici (come il colore
-        // delle facciate); fallback al range fisso finche' il cubo carica.
-        const mrtCube = getCubeSync('mean_radiant_temp')
-        const mrtLegendRange = mrtCube
-          ? { min: mrtCube.min, max: mrtCube.max }
-          : { min: 20, max: 80 }
+        // Stesso range con cui sono colorate le facciate (percentili 5-95
+        // delle MRT pedonali degli edifici): legenda e colori coincidono.
+        const mrtLegendRange = mrtBuildingsRange ?? { min: 20, max: 80 }
         // Data fissa della simulazione: mostrata quando e' attivo un dato
         // ENVI-met (overlay microclima o edifici per temperatura), non per il
         // solo rumore.
@@ -5344,9 +5208,12 @@ export default function MapViewer({
         const NOISE_GRAD = '#22c55e, #84cc16, #eab308, #f97316, #ef4444'
         return (
           <>
-            {/* Info del punto cliccato: IN ALTO a destra. */}
+            {/* Info del punto cliccato: IN ALTO a destra, sotto la bussola
+                (top-24: la bussola arriva a 5rem, +1rem di aria). Il max-h
+                spartisce la colonna con la legenda (35vh + 1rem di gap):
+                i due pannelli scrollano ognuno per sé e non si accavallano. */}
             {probe && (
-              <div className="absolute top-20 right-2 sm:right-4 z-10 w-[min(260px,calc(100vw-1rem))] max-h-[calc(100vh-7rem)] overflow-y-auto">
+              <div className="absolute top-24 right-2 sm:right-4 z-10 w-[min(260px,calc(100vw-1rem))] max-h-[calc(65vh-8rem)] overflow-y-auto">
                 <InfoPanel
                   lat={probe.lat}
                   lon={probe.lon}
@@ -5381,7 +5248,7 @@ export default function MapViewer({
                 sotto ora c'e' spazio libero e la legenda ci sta tutta. Scrolla
                 se molto alta (overflow-y-auto). */}
             {showLegend && (
-              <div className="absolute bottom-4 right-2 sm:right-4 z-10 w-[min(260px,calc(100vw-1rem))] max-h-[calc(100vh-9rem)] overflow-y-auto bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl" data-help="legend">
+              <div className="absolute bottom-4 right-2 sm:right-4 z-10 w-[min(260px,calc(100vw-1rem))] max-h-[35vh] overflow-y-auto bg-talea-panel/85 border border-talea-400/30 rounded p-2 backdrop-blur-sm shadow-xl" data-help="legend">
                 <div className="text-talea-400 text-[10px] font-mono uppercase tracking-widest mb-1.5 px-0.5">
                   {t('legend', lang)}
                 </div>
@@ -5411,8 +5278,8 @@ export default function MapViewer({
                       </div>
                       <p className="text-[#5a7a67] text-[10px] leading-snug mt-1">
                         {lang === 'it'
-                          ? 'Quanto “scotta” la facciata (sole + calore delle superfici): sale lungo l’altezza dell’edificio. Grigio = fuori dall’area ENVI-met.'
-                          : 'How hot the facade “feels” (sun + surface heat): it varies up the building’s height. Grey = outside the ENVI-met area.'}
+                          ? 'Caldo percepito (MRT) a livello strada, ~1,5 m, attorno all’edificio: sole diretto + calore delle superfici — non è la temperatura dell’aria né dei muri, al sole di luglio supera i 70 °C. Grigio = fuori dall’area ENVI-met.'
+                          : 'Perceived heat (MRT) at street level, ~1.5 m, around the building: direct sun + surface heat — not the air or wall temperature; in July sun it exceeds 70 °C. Grey = outside the ENVI-met area.'}
                       </p>
                     </div>
                   )}
@@ -5575,54 +5442,10 @@ export default function MapViewer({
             <path d="M17.5 19H8.2a3.7 3.7 0 0 1-.4-7.38 5 5 0 0 1 9.46 1.9A3.2 3.2 0 0 1 17.5 19Z" />
           </svg>
         </button>
-        {/* Suoni: paesaggio sonoro della zona microclima (verde = uccelli,
-            strade = traffico). Sintetizzato, niente file audio. */}
-        <button
-          type="button"
-          onClick={toggleSound}
-          data-help="sound"
-          title={lang === 'it' ? 'Suoni della zona' : 'Area soundscape'}
-          aria-label={lang === 'it' ? 'Attiva/disattiva i suoni' : 'Toggle area sounds'}
-          aria-pressed={soundOn}
-          className={`w-10 h-10 rounded-full bg-talea-panel/85 border backdrop-blur-sm shadow-xl flex items-center justify-center transition-colors ${
-            soundOn
-              ? 'border-talea-400/60 text-talea-100'
-              : 'border-talea-400/30 text-talea-300 hover:text-talea-100 hover:border-talea-400/60'
-          }`}
-        >
-          {soundOn ? (
-            // altoparlante con onde
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M11 5 6 9H2v6h4l5 4z" />
-              <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-              <path d="M19 5a9 9 0 0 1 0 14" />
-            </svg>
-          ) : (
-            // altoparlante sbarrato (muto)
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M11 5 6 9H2v6h4l5 4z" />
-              <line x1="22" y1="9" x2="16" y2="15" />
-              <line x1="16" y1="9" x2="22" y2="15" />
-            </svg>
-          )}
-        </button>
-        {/* (Il tasto "Guida" è stato spostato nell'header, a sinistra del
-            toggle lingua: vedi explore/page.tsx.) */}
+        {/* (Il tasto "Guida" è stato spostato nell'header — vedi
+            explore/page.tsx; il tasto "Suoni della zona" è stato rimosso
+            il 17/08/2026 insieme al paesaggio sonoro.) */}
       </div>
-
-      {/* Indicatore "stai ascoltando": cosa suona la zona sotto il punto. */}
-      {soundOn && (
-        <div className="absolute bottom-16 left-2 sm:left-4 z-20 flex items-center gap-2 px-3 py-1.5 rounded-full bg-talea-panel/90 border border-talea-400/30 backdrop-blur-sm shadow-xl text-[11px] text-talea-200">
-          <span aria-hidden="true">🔊</span>
-          {soundLabel
-            ? lang === 'it'
-              ? `Ascolti: ${soundLabel}`
-              : `Hearing: ${soundLabel}`
-            : lang === 'it'
-              ? 'Spostati sulla zona microclima'
-              : 'Move onto the microclimate area'}
-        </div>
-      )}
 
       {/* Pannello meteo: widget 3BMeteo. Nascosto in vista pulita come gli altri. */}
       {meteoOpen && !uiHidden && (

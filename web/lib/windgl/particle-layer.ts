@@ -30,6 +30,9 @@ const defaultProps: DefaultProps<WindParticleLayerProps> = {
   image: { type: 'object', value: null },
 }
 
+// `{}` ricalca la firma dei generics di deck.gl (ExtraPropsT extends {} = {}):
+// cambiarlo in `object` divergerebbe dall'upstream WeatherLayers/deck.gl.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export class WindParticleLayer<ExtraPropsT extends {} = {}> extends CompositeLayer<
   ExtraPropsT & Required<_WindParticleLayerProps>
 > {

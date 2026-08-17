@@ -1,6 +1,10 @@
 'use client'
 
 /**
+ * [NON PIÙ USATO — 17/08/2026] Il paesaggio sonoro è stato rimosso dalla UI
+ * su richiesta (i suoni infastidivano). Il file resta nel repo come tentativo
+ * documentato per la tesi (vedi CLAUDE.md, "conservare artefatti").
+ *
  * Paesaggio sonoro SINTETIZZATO con la Web Audio API — nessun file audio (niente
  * asset esterni / copyright): tutti i suoni sono generati a runtime.
  *

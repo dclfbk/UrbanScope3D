@@ -63,9 +63,14 @@ backdrop-blur-sm shadow-xl
   20 · dropdown/toast 30 · intro 40 · help overlay 60 · loading 100.
 
 Posizioni già occupate (`absolute` sopra la mappa): top-center basemap +
-ricerca · top-left toggle layer/"cosa vedere" · top-right bussola e
-InfoPanel · right-center slider quota · bottom-left controlli tondi e
-meteo · bottom-center TimeSlider e toast · bottom-right legenda.
+ricerca (+ toggle Zone subito a destra del gruppo) · top-left toggle
+layer/"cosa vedere" · top-right bussola (fino a 5rem) e InfoPanel (da
+top-24, max-h 65vh−8rem) · right-center slider quota (su desktop spostato
+a sinistra della colonna pannelli, ~276px dal bordo) · bottom-left
+controlli tondi (meteo si apre sopra, a bottom-16) · bottom-center
+TimeSlider e toast · bottom-right legenda (max-h 35vh). InfoPanel e
+legenda si spartiscono la colonna destra: non allargare i max-h o tornano
+ad accavallarsi.
 
 ## Bottoni — quattro stili, non un quinto
 
@@ -114,8 +119,9 @@ lavoro a sé, non un effetto collaterale di altri task.
   `border-amber-400/40` nella barra selezione).
 - Popup MapLibre costruiti come stringhe HTML con palette inline propria
   (`#666`, `#222`, `#0e7490`…) diversa dai pannelli React.
-- Landing (`app/page.tsx`) fuori sistema: azzurri `#5ba4dc`/`#a9cfee` e
-  `monospace` inline estranei alla palette Talea.
+- ~~Landing fuori sistema~~ — sistemata il 17/08/2026: barra tricolore
+  Talea, accenti `talea-400`/`talea-green`/`talea-yellow`, niente più
+  `monospace` inline né azzurri `#5ba4dc`.
 - Gradiente del layer rumore duplicato in due punti di `MapViewer.tsx`.
 - Geist e Geist Mono caricati in `layout.tsx` ma mai usati.
 - Token morti in `:root` di `globals.css` (`--shadow-*`, `--text-*`…):

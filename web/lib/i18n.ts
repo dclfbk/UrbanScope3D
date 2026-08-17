@@ -5,7 +5,56 @@
  * sostituzione 1:1 (la stessa key, lo stesso lookup).
  */
 
+import { useSyncExternalStore } from 'react'
+
 export type Lang = 'it' | 'en'
+
+// ── Lingua PERSISTENTE e condivisa tra le pagine ────────────────────────────
+// Prima home ed explore avevano due useState separati inizializzati da
+// navigator.language: la scelta manuale spariva a ogni reload/navigazione
+// (fastidioso per chi ha il browser in inglese ma vuole testare l'italiano).
+// Qui: localStorage 'us3d_lang' vince sul browser; useSyncExternalStore evita
+// il setState-in-effect (e il mismatch di hydration: lato server → 'it').
+const LANG_KEY = 'us3d_lang'
+let langCache: Lang | null = null
+const langListeners = new Set<() => void>()
+
+function detectLang(): Lang {
+  try {
+    const saved = localStorage.getItem(LANG_KEY)
+    if (saved === 'it' || saved === 'en') return saved
+  } catch {}
+  const nav =
+    typeof navigator !== 'undefined'
+      ? navigator.language || (navigator.languages && navigator.languages[0])
+      : null
+  return nav?.toLowerCase().startsWith('it') ? 'it' : 'en'
+}
+
+const subscribeLang = (cb: () => void) => {
+  langListeners.add(cb)
+  return () => {
+    langListeners.delete(cb)
+  }
+}
+const getLangSnapshot = (): Lang => {
+  if (!langCache) langCache = detectLang()
+  return langCache
+}
+
+/** Cambia lingua e la ricorda (localStorage): tutte le pagine si aggiornano. */
+export function setPreferredLang(l: Lang) {
+  langCache = l
+  try {
+    localStorage.setItem(LANG_KEY, l)
+  } catch {}
+  langListeners.forEach((cb) => cb())
+}
+
+/** Lingua corrente: salvata, altrimenti dal browser ('it' in prerender). */
+export function usePreferredLang(): Lang {
+  return useSyncExternalStore(subscribeLang, getLangSnapshot, () => 'it')
+}
 
 export const STRINGS = {
   // Pannelli

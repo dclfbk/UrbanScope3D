@@ -1,24 +1,19 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
 import { withBase } from '@/lib/basePath';
-
-type Lang = 'it' | 'en';
+import { setPreferredLang, usePreferredLang } from '@/lib/i18n';
 
 export default function Home() {
-  // Lingua dalla preferenza del browser: 'it' se l'utente ha l'italiano,
-  // altrimenti inglese. Parte da 'it' (anche lato server) e si aggiorna dopo il
-  // mount per evitare disallineamenti di hydration.
-  const [lang, setLang] = useState<Lang>('it');
-  useEffect(() => {
-    const nav =
-      navigator.language || (navigator.languages && navigator.languages[0]);
-    setLang(nav?.toLowerCase().startsWith('it') ? 'it' : 'en');
-  }, []);
+  // Lingua persistente e condivisa con /explore (lib/i18n): localStorage
+  // prima, preferenza del browser poi. Il toggle in alto a destra permette
+  // di provare l'altra lingua anche con il browser impostato diversamente.
+  const lang = usePreferredLang();
 
   const subtitle =
-    lang === 'it' ? 'Esplora gli ambienti urbani' : 'Exploring urban environments';
+    lang === 'it'
+      ? 'Il microclima urbano di Bologna in 3D'
+      : "Bologna's urban microclimate in 3D";
   const explore = lang === 'it' ? 'ESPLORA' : 'EXPLORE';
 
   return (
@@ -36,6 +31,26 @@ export default function Home() {
       {/* Velo scuro + gradiente: alza il contrasto delle scritte sul video. */}
       <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/55 to-black/80" />
 
+      {/* Toggle lingua a pillola (stesso pattern dell'header di /explore, in
+          variante traslucida per il fondo video scuro). */}
+      <div className="absolute top-4 right-4 z-20 grid grid-cols-2 gap-0.5 p-0.5 rounded-full bg-white/15 backdrop-blur-sm">
+        {(['it', 'en'] as const).map((code) => (
+          <button
+            key={code}
+            type="button"
+            onClick={() => setPreferredLang(code)}
+            className={`px-3.5 py-1 rounded-full text-xs font-semibold uppercase tracking-[0.05em] transition-colors ${
+              lang === code
+                ? 'bg-white text-talea-green-dark shadow-sm'
+                : 'text-white/80 hover:text-white hover:bg-white/10'
+            }`}
+            aria-pressed={lang === code}
+          >
+            {code}
+          </button>
+        ))}
+      </div>
+
       <div className="relative z-10 flex flex-col items-center justify-center h-full gap-8">
         <h1
           className="text-8xl md:text-9xl font-black text-white uppercase text-center"
@@ -49,17 +64,20 @@ export default function Home() {
           BOLOGNA
         </h1>
 
-        <div className="flex items-center gap-4 w-64">
-          <div className="flex-1 h-px bg-[#5ba4dc]" />
-          <div className="w-2 h-2 rotate-45 bg-[#5ba4dc]" />
-          <div className="flex-1 h-px bg-[#5ba4dc]" />
-        </div>
+        {/* Divisore: la barra accento tricolore Talea (come sotto l'header di
+            /explore), al posto del vecchio azzurro fuori palette. */}
+        <div
+          className="w-64 h-[3px] rounded-full"
+          style={{
+            background:
+              'linear-gradient(90deg, var(--talea-green) 0%, var(--talea-blue) 50%, var(--talea-yellow) 100%)',
+          }}
+        />
 
         <p
-          className="text-white text-base md:text-lg uppercase font-semibold text-center"
+          className="text-white text-base md:text-lg uppercase font-semibold text-center px-6"
           style={{
-            letterSpacing: '0.45em',
-            fontFamily: 'monospace',
+            letterSpacing: '0.3em',
             textShadow: '0 2px 10px rgba(0,0,0,0.9)',
           }}
         >
@@ -68,18 +86,17 @@ export default function Home() {
 
         <Link
           href="/explore"
-          className="group relative mt-3 px-12 py-4 border-2 border-[#5ba4dc] bg-talea-400/15 text-white text-sm uppercase font-bold cursor-pointer overflow-hidden backdrop-blur-sm transition-all duration-300 hover:text-black hover:border-[#a9cfee] active:scale-95"
+          className="group relative mt-3 px-12 py-4 border-2 border-talea-400 bg-talea-400/15 text-white text-sm uppercase font-bold cursor-pointer overflow-hidden backdrop-blur-sm transition-all duration-300 hover:text-white hover:border-talea-green active:scale-95"
           style={{
-            fontFamily: 'monospace',
             letterSpacing: '0.4em',
             textShadow: '0 1px 6px rgba(0,0,0,0.8)',
           }}
         >
-          <span className="absolute inset-0 bg-[#5ba4dc] translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-in-out" />
-          <span className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-[#a9cfee]" />
-          <span className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-[#a9cfee]" />
-          <span className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-[#a9cfee]" />
-          <span className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-[#a9cfee]" />
+          <span className="absolute inset-0 bg-talea-green translate-y-full group-hover:translate-y-0 transition-transform duration-300 ease-in-out" />
+          <span className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-talea-yellow" />
+          <span className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-talea-yellow" />
+          <span className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-talea-yellow" />
+          <span className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-talea-yellow" />
           <span className="relative z-10">{explore}</span>
         </Link>
       </div>

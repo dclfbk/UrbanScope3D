@@ -104,6 +104,7 @@ const defaultProps: DefaultProps<WindParticleLineLayerProps> = {
 
 // Upstream preferisce i default alle prop passate come undefined
 // (workaround per deck.gl, vedi WeatherLayers props.ts).
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- firma upstream
 function ensureDefaultProps<PropsT extends {}>(
   props: PropsT,
   defaults: DefaultProps<PropsT>,
@@ -144,6 +145,8 @@ function spawnBounds(viewport: WebMercatorViewport, data: Bounds4): Bounds4 {
   return out[0] < out[2] && out[1] < out[3] ? out : data
 }
 
+// `{}` ricalca la firma dei generics di deck.gl: vedi nota in particle-layer.ts.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export class WindParticleLineLayer<ExtraPropsT extends {} = {}> extends LineLayer<
   unknown,
   ExtraPropsT & Required<_WindParticleLineLayerProps>

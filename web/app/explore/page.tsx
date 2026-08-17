@@ -2,8 +2,8 @@
 
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
-import type { Lang } from '@/lib/i18n'
+import { useState } from 'react'
+import { setPreferredLang, usePreferredLang } from '@/lib/i18n'
 import { withBase } from '@/lib/basePath'
 
 const MapViewer = dynamic(
@@ -12,18 +12,13 @@ const MapViewer = dynamic(
 )
 
 export default function ExplorePage() {
-  const [lang, setLang] = useState<Lang>('it')
+  // Lingua persistente e condivisa con la home (lib/i18n): il toggle salva la
+  // scelta in localStorage, così sopravvive a reload e navigazioni.
+  const lang = usePreferredLang()
   // Modalità AIUTO (annotazioni): stato sollevato qui perché il bottone "Guida"
   // vive nell'header (a sinistra del toggle lingua), mentre l'overlay che
   // contorna i comandi è dentro MapViewer. Lo passo come prop controllato.
   const [helpOpen, setHelpOpen] = useState(false)
-  // Lingua iniziale dalla preferenza del browser (l'utente puo' comunque
-  // cambiarla col toggle). Aggiornata dopo il mount per non rompere l'hydration.
-  useEffect(() => {
-    const nav =
-      navigator.language || (navigator.languages && navigator.languages[0])
-    setLang(nav?.toLowerCase().startsWith('it') ? 'it' : 'en')
-  }, [])
   const subtitle = lang === 'it' ? 'Microclima urbano · Bologna' : 'Urban microclimate · Bologna'
   return (
     <main className="w-full h-screen bg-[#f7f9f7] flex flex-col">
@@ -37,6 +32,8 @@ export default function ExplorePage() {
             className="group flex items-center gap-3 min-w-0"
             aria-label="UrbanScope3D — home"
           >
+            {/* eslint-disable-next-line @next/next/no-img-element -- export
+                statico senza image optimizer: <img> su un logo piccolo va bene */}
             <img
               src={withBase('/talea-logo.png')}
               alt="Talea"
@@ -89,7 +86,7 @@ export default function ExplorePage() {
               <button
                 key={code}
                 type="button"
-                onClick={() => setLang(code)}
+                onClick={() => setPreferredLang(code)}
                 className={`px-3.5 py-1 rounded-full text-xs font-semibold uppercase tracking-[0.05em] transition-colors ${
                   lang === code
                     ? 'bg-talea-green-dark text-white shadow-sm'
