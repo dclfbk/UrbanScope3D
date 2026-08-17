@@ -955,7 +955,10 @@ async function geocodeBologna(
     PHOTON_URL +
     '?q=' + encodeURIComponent(q) +
     '&limit=8' +
-    `&lang=${lang === 'en' ? 'en' : 'it'}` +
+    // ATTENZIONE: Photon accetta solo lingue supportate e 'it' NON lo e'
+    // (HTTP 400 secco -> niente suggerimenti, verificato 17/08/2026).
+    // 'default' = nome locale OSM, che a Bologna e' gia' l'italiano.
+    `&lang=${lang === 'en' ? 'en' : 'default'}` +
     '&lat=44.4949&lon=11.3426' + // bias sul centro di Bologna
     `&bbox=${BOLOGNA_BOX.west},${BOLOGNA_BOX.south},${BOLOGNA_BOX.east},${BOLOGNA_BOX.north}`
   const r = await fetch(url, { signal })
@@ -1966,17 +1969,40 @@ function whitenMapLabels(map: maplibregl.Map): void {
   }
 }
 
-// Porta i layer-etichetta del basemap (type 'symbol') IN CIMA allo stack, cosi'
-// i nomi di vie/quartieri restano leggibili SOPRA gli edifici 3D (l'overlay deck
-// interleaved tende a coprirli). `moveLayer(id)` senza beforeId = sposta in cima.
-function raiseMapLabels(map: maplibregl.Map): void {
-  const style = map.getStyle()
-  for (const l of style?.layers ?? []) {
+// Le etichette del basemap restano SOPRA gli edifici 3D grazie al `beforeId`
+// dato a tutti i layer deck — vedi labelsBeforeIdRef: deck 9 li disegna in un
+// gruppo custom inserito prima del primo layer simbolo dello stile. Spostare
+// a mano i gruppi "deck-layer-group-*" con moveLayer NON funziona: deck non
+// rispetta la posizione nello stack per il rendering. `beforeId` e' letto da
+// MapboxOverlay interleaved ma non sta nei tipi di deck: cast mirato qui.
+const withBeforeId = (l: Layer, beforeId: string): Layer =>
+  l.clone({ beforeId } as unknown as Partial<Layer['props']>)
+
+// Dirada i nomi delle strade: il default MapLibre (symbol-spacing 250px) col
+// pitch 3D ripete lo stesso nome anche 5-6 volte lungo una via. In piu'
+// nasconde i numeri civici su OGNI basemap: ora che le etichette stanno
+// sopra gli edifici (vedi raiseMapLabels) i "numerini" galleggerebbero sui
+// tetti. Idempotente, da richiamare dopo ogni setStyle (ripristina i default).
+function spreadStreetLabels(map: maplibregl.Map): void {
+  for (const l of map.getStyle()?.layers ?? []) {
     if (l.type !== 'symbol') continue
+    const srcLayer = (l as { 'source-layer'?: string })['source-layer']
+    if (/housenum/i.test(l.id) || /housenum/i.test(srcLayer ?? '')) {
+      try {
+        map.setLayoutProperty(l.id, 'visibility', 'none')
+      } catch {
+        // niente da nascondere
+      }
+      continue
+    }
+    const placement = (
+      l as { layout?: { 'symbol-placement'?: string } }
+    ).layout?.['symbol-placement']
+    if (placement !== 'line' && placement !== 'line-center') continue
     try {
-      map.moveLayer(l.id)
+      map.setLayoutProperty(l.id, 'symbol-spacing', 600)
     } catch {
-      // layer non spostabile: ignoro
+      // layer senza spacing: ignoro
     }
   }
 }
@@ -2034,6 +2060,20 @@ const HELP_INFO: Record<
     side: 'above',
   },
 }
+
+// Ordine delle tappe del tour guidato (la guida mostra UNA card alla volta:
+// con tutte le card insieme si sovrapponevano tra loro e ai pannelli).
+const HELP_ORDER = [
+  'search',
+  'basemap',
+  'layers',
+  'arredi',
+  'compass',
+  'height',
+  'legend',
+  'sun',
+  'controls',
+] as const
 
 type MapViewerProps = {
   lang: Lang
@@ -2374,7 +2414,12 @@ export default function MapViewer({
       const dt = Math.min(0.1, dtMs / 1000)
       sys.heat.step(dt, now / 1000)
       sys.mist.step(dt, now / 1000)
-      liveLayersRef.current = buildLiveLayers(sys)
+      // Anche i layer del "vivo" nello slot sotto le etichette (beforeId),
+      // come gli statici: senza, finirebbero nel gruppo in cima allo stile.
+      const liveBefore = labelsBeforeIdRef.current
+      liveLayersRef.current = liveBefore
+        ? buildLiveLayers(sys).map((l) => withBeforeId(l, liveBefore))
+        : buildLiveLayers(sys)
       if (overlayReadyRef.current && overlayRef.current) {
         overlayRef.current.setProps({
           layers: [...staticLayersRef.current, ...liveLayersRef.current],
@@ -2393,6 +2438,11 @@ export default function MapViewer({
   // (prima era un pannello fisso in basso a destra). Chiuso di default.
   const [basemapOpen, setBasemapOpen] = useState(false)
   const reapplyRef = useRef<(() => void) | null>(null)
+  // Id del PRIMO layer simbolo del basemap corrente: e' il `beforeId` dato a
+  // tutti i layer deck, cosi' vengono disegnati SOTTO le etichette (nomi di
+  // vie/piazze leggibili sopra gli edifici). Misurato a ogni load di stile;
+  // null se lo stile non ha simboli (es. satellite) -> deck disegna in cima.
+  const labelsBeforeIdRef = useRef<string | null>(null)
   const [collapsed, setCollapsed] = useState<Record<CategoryKey, boolean>>(
     () =>
       Object.fromEntries(
@@ -2460,9 +2510,16 @@ export default function MapViewer({
   // "Guida" dell'header apre invece la modalità AIUTO annotata (helpOpen).
   const [showGuide, setShowGuide] = useState(false)
   // Modalità AIUTO: rettangoli (in coordinate viewport) dei comandi marcati con
-  // `data-help`, misurati all'apertura. Per ognuno disegno un contorno giallo
-  // tratteggiato + una card che spiega cosa fa (vedi HELP_INFO e l'overlay).
+  // `data-help`, misurati all'apertura. Il tour li percorre UNO alla volta
+  // (HELP_ORDER): contorno giallo sul comando corrente + card che lo spiega.
   const [helpRects, setHelpRects] = useState<{ key: string; rect: DOMRect }[]>([])
+  // Tappa corrente del tour; riparte da 0 a ogni apertura della guida.
+  const [helpStep, setHelpStep] = useState(0)
+  useEffect(() => {
+    if (!helpOpen) return
+    const t = setTimeout(() => setHelpStep(0), 0)
+    return () => clearTimeout(t)
+  }, [helpOpen])
   useEffect(() => {
     if (!helpOpen) return // l'overlay non e' renderizzato: rect stantii innocui
     const measure = () => {
@@ -3223,8 +3280,9 @@ export default function MapViewer({
       addCustomLayers()
       tintBasemapBackground(map, basemap)
       if (basemap === 'dark') whitenMapLabels(map)
-      // Dopo il primo render (deck ha aggiunto gli edifici): alzo le etichette.
-      map.once('idle', () => raiseMapLabels(map))
+      spreadStreetLabels(map)
+      labelsBeforeIdRef.current =
+        map.getStyle()?.layers.find((l) => l.type === 'symbol')?.id ?? null
       reapplyRef.current = addCustomLayers
 
       // Effetto luce: creato con lo stato ombre INIZIALE (di default off). Se il
@@ -3455,6 +3513,8 @@ export default function MapViewer({
     })
 
     mapRef.current = map
+    // Handle di comodo per il debug dalla console dev tools.
+    ;(window as unknown as { __usMap?: maplibregl.Map }).__usMap = map
 
     return () => {
       noiseTipRef.current?.remove()
@@ -3588,7 +3648,7 @@ export default function MapViewer({
           : null
         // Layer STATICI (tutto tranne il "microclima vivo"): salvati in ref
         // cosi' il loop rAF dell'animazione li ricompone senza ricostruirli.
-        const staticLayers = [
+        const rawStaticLayers = [
             buildShadowBuildingsLayer(
               // Mostro gli edifici estrusi se e' attivo il 3D OPPURE la
               // colorazione per temperatura (cosi' 'buildings-temp' funziona
@@ -3702,6 +3762,15 @@ export default function MapViewer({
             buildQuartiereFlashLayer(quartieri, flashQuartiere, flashFading),
             buildQuartiereLabelsLayer(quartieri),
           ].filter(Boolean) as Layer[]
+        // Tutti i layer deck nello slot PRIMA delle etichette del basemap:
+        // con `beforeId` deck 9 li disegna in un gruppo custom inserito sotto
+        // i layer simbolo, cosi' i nomi di vie/piazze restano leggibili sopra
+        // gli edifici 3D (prima il gruppo finiva in fondo allo stile e li
+        // copriva). L'id del primo simbolo e' misurato al load dello stile.
+        const labelsBefore = labelsBeforeIdRef.current
+        const staticLayers = labelsBefore
+          ? rawStaticLayers.map((l) => withBeforeId(l, labelsBefore))
+          : rawStaticLayers
         staticLayersRef.current = staticLayers
         overlay.setProps({
           // Stessa istanza persistente: deck fa deepEqual e non la sostituisce
@@ -3772,7 +3841,9 @@ export default function MapViewer({
       tintBasemapBackground(map, basemap)
       // Sbianco le etichette SOLO sul basemap scuro; sul chiaro restano native.
       if (basemap === 'dark') whitenMapLabels(map)
-      map.once('idle', () => raiseMapLabels(map))
+      spreadStreetLabels(map)
+      labelsBeforeIdRef.current =
+        map.getStyle()?.layers.find((l) => l.type === 'symbol')?.id ?? null
     })
   }, [basemap])
 
@@ -4208,7 +4279,7 @@ export default function MapViewer({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('searchPlaceholder', lang)}
-            className="flex-1 bg-transparent text-sm text-talea-100 placeholder:text-[#7a9a87] outline-none font-mono"
+            className="flex-1 bg-transparent text-base sm:text-sm text-talea-100 placeholder:text-[#7a9a87] outline-none font-mono"
           />
           {search && (
             <button
@@ -4279,14 +4350,15 @@ export default function MapViewer({
       </div>
 
       {/* Bussola: il quadrante ruota con il bearing, click = riallinea a Nord.
-          Ingrandita rispetto a prima (era w-12 h-12). 'O' (ovest) in IT,
-          'W' in EN. */}
+          'O' (ovest) in IT, 'W' in EN. Su MOBILE scende in seconda fila
+          (top-[4.35rem]): in prima fila la search bar occupa quasi tutta la
+          larghezza e la copriva. */}
       <button
         type="button"
         onClick={resetNorth}
         data-help="compass"
         title={t('resetNorth', lang)}
-        className="absolute top-4 right-2 sm:right-4 z-10 w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-talea-panel/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center hover:border-talea-400/60 transition-colors"
+        className="absolute top-[4.35rem] sm:top-4 right-2 sm:right-4 z-10 w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-talea-panel/85 border border-talea-400/30 backdrop-blur-sm shadow-xl flex items-center justify-center hover:border-talea-400/60 transition-colors"
       >
         <div
           className="relative w-12 h-12"
@@ -4318,8 +4390,7 @@ export default function MapViewer({
           type="button"
           onClick={() => setZonePanelOpen((v) => !v)}
           title={zonePanelOpen ? t('hideZones', lang) : t('showZones', lang)}
-          style={{ left: 'calc(50% + min(210px, 40vw) + 25px + 0.75rem)' }}
-          className="absolute top-4 z-20 px-2.5 py-2 rounded bg-talea-panel/90 border border-talea-400/30 backdrop-blur-sm shadow-xl text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
+          className="absolute z-20 top-[4.35rem] right-[4.6rem] sm:top-4 sm:right-auto sm:left-[calc(50%+min(210px,40vw)+25px+0.75rem)] px-2.5 py-2 rounded bg-talea-panel/90 border border-talea-400/30 backdrop-blur-sm shadow-xl text-talea-300 hover:text-talea-100 hover:border-talea-400/60 transition-colors text-[11px] font-mono uppercase tracking-widest flex items-center gap-1.5"
           aria-label="Toggle zone panel"
         >
           <span
@@ -4337,8 +4408,7 @@ export default function MapViewer({
       {/* Pannello Zone (collassabile), sotto il toggle accanto alla search. */}
       {quartieri && zonePanelOpen && (
         <div
-          style={{ left: 'calc(50% + min(210px, 40vw) + 25px + 0.75rem)' }}
-          className="absolute top-16 z-10 bg-talea-panel/85 border border-talea-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl max-w-[60vw] sm:max-w-[200px]"
+          className="absolute z-10 top-[7.2rem] right-2 sm:top-16 sm:right-auto sm:left-[calc(50%+min(210px,40vw)+25px+0.75rem)] bg-talea-panel/85 border border-talea-400/30 rounded p-1.5 sm:p-2 backdrop-blur-sm shadow-xl max-w-[60vw] sm:max-w-[200px]"
         >
           <div className="flex flex-col gap-1">
             {/* Voce "Bologna": inquadra l'intera citta' (unione dei quartieri). */}
@@ -4657,7 +4727,7 @@ export default function MapViewer({
               step={1}
               value={idx}
               onChange={(e) => setEnvHeightBand(Number(e.target.value))}
-              className="accent-talea-400 h-32 cursor-pointer"
+              className="accent-talea-400 h-24 sm:h-32 cursor-pointer"
               style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
               aria-label={lang === 'it' ? 'Altezza dal suolo' : 'Height above ground'}
             />
@@ -4710,7 +4780,7 @@ export default function MapViewer({
           )
         }
         return (
-          <div className="absolute top-20 left-2 sm:left-4 z-20 flex items-start gap-2">
+          <div className="absolute top-20 left-2 sm:left-4 z-20 flex items-start gap-2 flex-wrap max-w-[calc(100vw-9.5rem)] sm:max-w-none">
             {/* Toggle del pannello "Cosa vedere" (ex "Layer"). */}
             <button
               type="button"
@@ -5090,104 +5160,169 @@ export default function MapViewer({
         </div>
       )}
 
-      {/* ─── MODALITÀ AIUTO (annotazioni) ──────────────────────────────────────
-          Come l'help di talea.comune.bologna.it/historysuhi: ogni comando
-          marcato con `data-help` viene contornato da un TRATTEGGIO GIALLO e
-          accanto compare una card con cosa fa, su sfondo scurito + banner in
-          alto. I rettangoli sono misurati in `helpRects`. L'overlay non blocca i
-          click (pointer-events-none): si esce dal banner. */}
-      {helpOpen && (
-        <div className="fixed inset-0 z-[60] pointer-events-none">
-          <div className="absolute inset-0 bg-[#00280d]/55" />
-
-          {helpRects.map(({ key, rect }, i) => {
-            const info = HELP_INFO[key]
-            if (!info) return null
-            const L = lang === 'it' ? 0 : 1
-            const vw = window.innerWidth
-            const vh = window.innerHeight
-            const CARD_W = 250
-            const clamp = (x: number, lo: number, hi: number) =>
-              Math.max(lo, Math.min(hi, x))
-            const card: CSSProperties = { width: CARD_W }
-            if (info.side === 'below') {
-              card.top = rect.bottom + 10
-              card.left = clamp(rect.left, 8, vw - CARD_W - 8)
-            } else if (info.side === 'above') {
-              card.bottom = vh - rect.top + 10
-              card.left = clamp(rect.left, 8, vw - CARD_W - 8)
-            } else if (info.side === 'left') {
-              card.top = clamp(rect.top, 8, vh - 110)
-              card.right = vw - rect.left + 10
+      {/* ─── MODALITÀ AIUTO (tour a tappe) ─────────────────────────────────────
+          Ispirata all'help di talea.comune.bologna.it/historysuhi, ma a TAPPE:
+          UNA card alla volta sul comando corrente (con tutte le card insieme
+          si sovrapponevano tra loro e ai pannelli — segnalato il 17/08/2026).
+          Il velo BLOCCA i click sui comandi sottostanti (prima restavano
+          cliccabili e i pannelli si muovevano sotto la guida); un click sul
+          velo porta alla tappa successiva. Su mobile la card sta in basso a
+          tutta larghezza. */}
+      {helpOpen &&
+        (() => {
+          const L = lang === 'it' ? 0 : 1
+          const rectByKey = new Map(helpRects.map((r) => [r.key, r.rect]))
+          const steps = HELP_ORDER.filter((k) => rectByKey.has(k))
+          const step = Math.min(helpStep, Math.max(0, steps.length - 1))
+          const curKey = steps[step]
+          const curRect = curKey ? rectByKey.get(curKey) : undefined
+          const curInfo = curKey ? HELP_INFO[curKey] : undefined
+          const next = () => {
+            if (step >= steps.length - 1) onHelpOpenChange(false)
+            else setHelpStep(step + 1)
+          }
+          const prev = () => setHelpStep(Math.max(0, step - 1))
+          const vw = window.innerWidth
+          const vh = window.innerHeight
+          const isMobile = vw < 640
+          const CARD_W = 270
+          const clamp = (x: number, lo: number, hi: number) =>
+            Math.max(lo, Math.min(hi, x))
+          // Posizione card: accanto al comando (lato preferito), clampata
+          // dentro il viewport e sotto il banner (~64px). Su mobile: in basso.
+          const card: CSSProperties = isMobile
+            ? { left: 8, right: 8, bottom: 12 }
+            : { width: CARD_W }
+          if (!isMobile && curRect && curInfo) {
+            if (curInfo.side === 'below') {
+              card.top = clamp(curRect.bottom + 10, 64, vh - 150)
+              card.left = clamp(curRect.left, 8, vw - CARD_W - 8)
+            } else if (curInfo.side === 'above') {
+              card.bottom = clamp(vh - curRect.top + 10, 8, vh - 72)
+              card.left = clamp(curRect.left, 8, vw - CARD_W - 8)
+            } else if (curInfo.side === 'left') {
+              card.top = clamp(curRect.top, 64, vh - 150)
+              card.right = clamp(vw - curRect.left + 10, 8, vw - CARD_W - 8)
             } else {
-              card.top = clamp(rect.top, 8, vh - 110)
-              card.left = clamp(rect.right + 10, 8, vw - CARD_W - 8)
+              card.top = clamp(curRect.top, 64, vh - 150)
+              card.left = clamp(curRect.right + 10, 8, vw - CARD_W - 8)
             }
-            return (
-              <div key={key + i}>
-                {/* contorno giallo tratteggiato attorno al comando */}
-                <div
-                  className="absolute rounded-md"
-                  style={{
-                    left: rect.left - 4,
-                    top: rect.top - 4,
-                    width: rect.width + 8,
-                    height: rect.height + 8,
-                    border: '2px dashed var(--talea-yellow)',
-                    boxShadow: '0 0 0 2px rgba(255, 230, 4, 0.18)',
-                  }}
-                />
-                {/* card descrittiva */}
-                <div
-                  className="absolute flex items-start gap-2 rounded-md border border-talea-green bg-white px-3 py-2 shadow-2xl"
-                  style={card}
-                >
-                  <span className="shrink-0 grid place-items-center w-5 h-5 rounded-full bg-talea-green-dark text-talea-yellow text-[10px] font-bold">
-                    {i + 1}
+          }
+          return (
+            <div className="fixed inset-0 z-[60]">
+              {/* Velo: assorbe i click (comandi sotto NON cliccabili). */}
+              <div
+                className="absolute inset-0 bg-[#00280d]/55 cursor-pointer"
+                onClick={next}
+                aria-hidden="true"
+              />
+              {/* Contorni deboli sugli ALTRI comandi del tour (orientamento). */}
+              {steps.map((k, i) => {
+                if (i === step) return null
+                const r = rectByKey.get(k)
+                if (!r) return null
+                return (
+                  <div
+                    key={k}
+                    className="absolute rounded-md pointer-events-none"
+                    style={{
+                      left: r.left - 4,
+                      top: r.top - 4,
+                      width: r.width + 8,
+                      height: r.height + 8,
+                      border: '1px dashed rgba(255, 230, 4, 0.35)',
+                    }}
+                  />
+                )
+              })}
+              {/* Comando corrente: contorno acceso + card descrittiva. */}
+              {curRect && curInfo && (
+                <>
+                  <div
+                    className="absolute rounded-md pointer-events-none"
+                    style={{
+                      left: curRect.left - 4,
+                      top: curRect.top - 4,
+                      width: curRect.width + 8,
+                      height: curRect.height + 8,
+                      border: '2px dashed var(--talea-yellow)',
+                      boxShadow: '0 0 0 2px rgba(255, 230, 4, 0.18)',
+                    }}
+                  />
+                  <div
+                    className="absolute flex items-start gap-2 rounded-md border border-talea-green bg-white px-3 py-2 shadow-2xl"
+                    style={card}
+                  >
+                    <span className="shrink-0 grid place-items-center w-5 h-5 rounded-full bg-talea-green-dark text-talea-yellow text-[10px] font-bold">
+                      {step + 1}
+                    </span>
+                    <span className="text-[12px] leading-snug text-[#1f3d2a]">
+                      <b className="text-talea-green-dark">{curInfo.label[L]}</b>
+                      {' — '}
+                      {curInfo.text[L]}
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {/* Banner: contatore tappe + frecce + "Guida completa" + chiudi. */}
+              <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[61] flex items-center gap-2 sm:gap-3 w-[min(720px,calc(100vw-1rem))] rounded-2xl border border-talea-green bg-[#fffbf1]/95 px-3 sm:px-4 py-2 sm:py-2.5 backdrop-blur-md shadow-2xl">
+                <span className="hidden sm:flex items-center gap-2 text-[13px] font-semibold text-[#17231a] min-w-0">
+                  <span aria-hidden="true">💡</span>
+                  <span className="truncate">
+                    {lang === 'it'
+                      ? 'Guida: un comando alla volta.'
+                      : 'Guide: one control at a time.'}
                   </span>
-                  <span className="text-[12px] leading-snug text-[#1f3d2a]">
-                    <b className="text-talea-green-dark">{info.label[L]}</b>
-                    {' — '}
-                    {info.text[L]}
+                </span>
+                <div className="ml-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={prev}
+                    disabled={step === 0}
+                    aria-label={lang === 'it' ? 'Tappa precedente' : 'Previous step'}
+                    className="w-9 h-9 grid place-items-center rounded-full border border-talea-400/30 bg-white text-[#17231a] enabled:hover:border-talea-green enabled:hover:text-talea-green-dark disabled:opacity-40 transition-colors text-lg leading-none"
+                  >
+                    ‹
+                  </button>
+                  <span className="text-[12px] font-bold text-talea-green-dark tabular-nums min-w-[3ch] text-center">
+                    {steps.length > 0 ? `${step + 1}/${steps.length}` : '–'}
                   </span>
+                  <button
+                    type="button"
+                    onClick={next}
+                    aria-label={
+                      step >= steps.length - 1
+                        ? lang === 'it' ? 'Fine del tour' : 'End of tour'
+                        : lang === 'it' ? 'Tappa successiva' : 'Next step'
+                    }
+                    className="w-9 h-9 grid place-items-center rounded-full border border-talea-400/30 bg-white text-[#17231a] hover:border-talea-green hover:text-talea-green-dark transition-colors text-lg leading-none"
+                  >
+                    ›
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onHelpOpenChange(false)
+                      setShowGuide(true)
+                    }}
+                    className="px-3 py-1.5 rounded-full bg-talea-green-dark text-white text-[12px] font-bold hover:bg-[#0d533f] transition-colors"
+                  >
+                    {lang === 'it' ? 'Guida completa' : 'Full guide'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onHelpOpenChange(false)}
+                    aria-label={lang === 'it' ? 'Chiudi aiuto' : 'Close help'}
+                    className="w-9 h-9 grid place-items-center rounded-full border border-talea-400/30 bg-white text-[#17231a] hover:border-talea-green hover:text-talea-green-dark transition-colors text-lg leading-none"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
-            )
-          })}
-
-          {/* Banner: titolo + "Guida completa" (apre il modale) + chiudi. */}
-          <div className="pointer-events-auto fixed top-3 left-1/2 -translate-x-1/2 z-[61] flex items-center gap-3 w-[min(720px,calc(100vw-1.5rem))] rounded-2xl border border-talea-green bg-[#fffbf1]/95 px-4 py-2.5 backdrop-blur-md shadow-2xl">
-            <span className="flex items-center gap-2 text-[13px] font-semibold text-[#17231a] min-w-0">
-              <span aria-hidden="true">💡</span>
-              <span className="truncate">
-                {lang === 'it'
-                  ? 'Modalità aiuto: ogni riquadro giallo spiega un comando.'
-                  : 'Help mode: each yellow box explains a control.'}
-              </span>
-            </span>
-            <div className="ml-auto flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  onHelpOpenChange(false)
-                  setShowGuide(true)
-                }}
-                className="px-3 py-1.5 rounded-full bg-talea-green-dark text-white text-[12px] font-bold hover:bg-[#0d533f] transition-colors"
-              >
-                {lang === 'it' ? 'Guida completa' : 'Full guide'}
-              </button>
-              <button
-                type="button"
-                onClick={() => onHelpOpenChange(false)}
-                aria-label={lang === 'it' ? 'Chiudi aiuto' : 'Close help'}
-                className="w-9 h-9 grid place-items-center rounded-full border border-talea-400/30 bg-white text-[#17231a] hover:border-talea-green hover:text-talea-green-dark transition-colors text-lg leading-none"
-              >
-                ✕
-              </button>
             </div>
-          </div>
-        </div>
-      )}
+          )
+        })()}
 
       {/* Colonna in alto a destra: prima le info del punto cliccato, poi la
           legenda (overlay microclima + scala temperatura edifici) SOTTO. */}
@@ -5213,7 +5348,7 @@ export default function MapViewer({
                 spartisce la colonna con la legenda (35vh + 1rem di gap):
                 i due pannelli scrollano ognuno per sé e non si accavallano. */}
             {probe && (
-              <div className="absolute top-24 right-2 sm:right-4 z-10 w-[min(260px,calc(100vw-1rem))] max-h-[calc(65vh-8rem)] overflow-y-auto">
+              <div className="absolute top-32 sm:top-24 right-2 sm:right-4 z-10 w-[min(260px,calc(100vw-1rem))] max-h-[calc(60vh-8rem)] sm:max-h-[calc(65vh-8rem)] overflow-y-auto">
                 <InfoPanel
                   lat={probe.lat}
                   lon={probe.lon}

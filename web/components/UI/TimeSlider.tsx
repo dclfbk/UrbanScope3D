@@ -45,8 +45,10 @@ export default function TimeSlider({ value, onChange, lat, lon, lang }: Props) {
     timeStyle: 'short',
   })
 
+  // Su mobile sta SOPRA la riga dei controlli tondi (bottom-[4.5rem]):
+  // a bottom-4, largo quasi quanto lo schermo, li copriva.
   return (
-    <div data-help="sun" className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 bg-talea-panel/85 border border-talea-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl w-[min(460px,calc(100vw-1rem))] sm:min-w-[460px]">
+    <div data-help="sun" className="absolute bottom-[4.5rem] sm:bottom-4 left-1/2 -translate-x-1/2 z-10 bg-talea-panel/85 border border-talea-400/30 rounded p-2 sm:p-3 backdrop-blur-sm shadow-xl w-[min(460px,calc(100vw-1rem))] sm:min-w-[460px]">
       <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
         <div className="text-talea-400 text-[10px] sm:text-xs font-mono uppercase tracking-widest">
           {t('sun', lang)}
